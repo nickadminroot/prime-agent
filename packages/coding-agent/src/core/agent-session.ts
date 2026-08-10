@@ -15,7 +15,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
@@ -170,6 +170,7 @@ import {
 	validateGoalObjective,
 } from "./goals.js";
 import type { HostRequestHandlers, KernelSentAgentMessage } from "./kernel/index.js";
+import type { SnapshotResult } from "./kernel/state-snapshot.js";
 import { type RestoreResult, snapshotPathIn } from "./kernel/state-snapshot.js";
 import type { McpManager } from "./mcp/mcp-manager.js";
 import {
@@ -222,6 +223,7 @@ import {
 	createRlmListSubagentsHostHandler,
 	createRlmRunHostHandler,
 	findRlmModelMatches,
+	normalizeRequestedRlmReasoningEffort,
 	normalizeRequestedRlmSubagentModel,
 	normalizeRequestedRlmSubagentSessionName,
 	type RlmDeleteSubagentResult,
@@ -8550,6 +8552,11 @@ export class AgentSession {
 		this.setActiveToolsByName([...new Set(nextActiveToolNames)]);
 	}
 
+	/** Export a best-effort copy of this session's live IPython namespace for a child kernel. */
+	async snapshotIpythonStateTo(artifactDir: string): Promise<SnapshotResult | null> {
+		return (await this._ipythonKernelProvisioner?.snapshotStateTo(artifactDir)) ?? null;
+	}
+
 	private _buildRuntime(options: {
 		activeToolNames?: string[];
 		flagValues?: Map<string, boolean | string>;
@@ -8933,6 +8940,7 @@ export class AgentSession {
 		spawnCode?: string;
 		sessionDir: string;
 		model: Model<any>;
+		thinkingLevel?: ThinkingLevel;
 	}): CreateRlmSubagentRuntimeOptions {
 		return {
 			parentSession: this,
@@ -8942,7 +8950,7 @@ export class AgentSession {
 			spawnCode: options.spawnCode,
 			sessionDir: options.sessionDir,
 			model: options.model,
-			thinkingLevel: clampThinkingLevel(options.model, this.thinkingLevel) as ThinkingLevel,
+			thinkingLevel: clampThinkingLevel(options.model, options.thinkingLevel ?? this.thinkingLevel) as ThinkingLevel,
 			serviceTier:
 				this.serviceTier === "priority" && !supportsFastMode(options.model) ? "default" : this.serviceTier,
 			scopedModels: [...this._scopedModels],
@@ -8962,16 +8970,23 @@ export class AgentSession {
 			return await this._subagentRuntimeHost.createRlmSubagentRuntime(options);
 		}
 
-		return this._createInlineRlmSubagentRuntime(options);
+		return await this._createInlineRlmSubagentRuntime(options);
 	}
 
-	private _createInlineRlmSubagentRuntime(options: CreateRlmSubagentRuntimeOptions): RlmSubagentRuntime {
-		const childSessionManager = SessionManager.create(this._cwd, options.sessionDir);
-		if (options.parentSession.sessionFile) {
-			childSessionManager.newSession({
-				parentSession: options.parentSession.sessionFile,
-				rlmDepth: options.rlmDepth,
-			});
+	private async _createInlineRlmSubagentRuntime(
+		options: CreateRlmSubagentRuntimeOptions,
+	): Promise<RlmSubagentRuntime> {
+		mkdirSync(options.sessionDir, { recursive: true });
+		await this.snapshotIpythonStateTo(options.sessionDir).catch(() => null);
+
+		const parentSessionFile = options.parentSession.sessionFile;
+		const canForkParentSession =
+			parentSessionFile !== undefined && existsSync(parentSessionFile) && statSync(parentSessionFile).size > 0;
+		const childSessionManager = canForkParentSession
+			? SessionManager.forkFrom(parentSessionFile, this._cwd, options.sessionDir)
+			: SessionManager.create(this._cwd, options.sessionDir);
+		if (parentSessionFile && !canForkParentSession) {
+			childSessionManager.newSession({ parentSession: parentSessionFile, rlmDepth: options.rlmDepth });
 		}
 		childSessionManager.appendModelChange(options.model.provider, options.model.id);
 		childSessionManager.appendThinkingLevelChange(options.thinkingLevel);
@@ -9606,13 +9621,14 @@ export class AgentSession {
 		kwargs: Record<string, unknown> = {},
 		spawnCode?: string,
 	): Promise<RlmSpawnHandle> {
-		const { name: rawName, model: rawModel, ...unsupported } = kwargs;
+		const { name: rawName, model: rawModel, reasoning_effort: rawReasoningEffort, ...unsupported } = kwargs;
 		const unsupportedKwargs = Object.keys(unsupported);
 		if (unsupportedKwargs.length > 0) {
 			throw new Error(`Unsupported rlm.run kwargs: ${unsupportedKwargs.sort().join(", ")}`);
 		}
 		const requestedSessionName = normalizeRequestedRlmSubagentSessionName(rawName);
 		const requestedModel = normalizeRequestedRlmSubagentModel(rawModel);
+		const requestedReasoningEffort = normalizeRequestedRlmReasoningEffort(rawReasoningEffort);
 		if (requestedSessionName) assertDirectAgentMessageTarget(requestedSessionName);
 		if (this._rlmDepth >= this._rlmMaxDepth) {
 			throw new Error(
@@ -9702,6 +9718,7 @@ export class AgentSession {
 				spawnCode,
 				sessionDir: childSessionDir,
 				model: modelSelection.model,
+				thinkingLevel: requestedReasoningEffort,
 			}),
 			onSessionPublished: publishChildSession,
 		};
@@ -9805,7 +9822,7 @@ export class AgentSession {
 					}
 				});
 				run.unsubscribe = unsubscribeChildEvents;
-				const content = `[task from parent]\n\n${prompt}`;
+				const content = `[task from parent]\n\nThe history above is provided for reference only. Your task is defined in the prompt from the parent below.\n\n${prompt}`;
 				const spawnMessage: AgentSessionMessage = {
 					role: "custom",
 					customType: AGENT_MESSAGE_CUSTOM_TYPE,

@@ -57,6 +57,21 @@ export type RlmFindModelsHandler = (query: string, limit: number) => RlmFindMode
 const RLM_SUBAGENT_SESSION_NAME_MAX_LENGTH = 64;
 export const DEFAULT_RLM_MODEL_SEARCH_LIMIT = 8;
 export const MAX_RLM_MODEL_SEARCH_LIMIT = 20;
+const RLM_REASONING_EFFORTS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** Validate and normalize an orchestrator-supplied subagent reasoning effort. */
+export function normalizeRequestedRlmReasoningEffort(value: unknown): ThinkingLevel | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (typeof value !== "string") {
+		throw new Error("rlm.run reasoning_effort must be a string");
+	}
+	if (!RLM_REASONING_EFFORTS.includes(value as ThinkingLevel)) {
+		throw new Error(`rlm.run reasoning_effort must be one of: ${RLM_REASONING_EFFORTS.join(", ")}`);
+	}
+	return value as ThinkingLevel;
+}
 
 /** Validate and normalize an orchestrator-supplied subagent session name. */
 export function normalizeRequestedRlmSubagentSessionName(value: unknown): string | undefined {
