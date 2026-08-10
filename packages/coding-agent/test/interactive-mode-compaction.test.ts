@@ -15,6 +15,14 @@ const startCompactionLoader = Reflect.get(InteractiveMode.prototype, "startCompa
 	reason: string,
 	customInstructions?: string,
 ) => void;
+const orderMessagesForTranscript = Reflect.get(InteractiveMode.prototype, "orderMessagesForTranscript") as (
+	this: unknown,
+	messages: Array<Record<string, unknown>>,
+) => Array<Record<string, unknown>>;
+const addMessageToEditorHistory = Reflect.get(InteractiveMode.prototype, "addMessageToEditorHistory") as (
+	this: unknown,
+	message: Record<string, unknown>,
+) => void;
 
 function createFakeThis(overrides: Record<string, unknown> = {}) {
 	return {
@@ -51,6 +59,28 @@ function createFakeThis(overrides: Record<string, unknown> = {}) {
 
 describe("InteractiveMode compaction events", () => {
 	beforeAll(() => initTheme("dark"));
+
+	test("orders historical fragments before retained messages and keeps them out of editor history", () => {
+		const compacted = { role: "custom", customType: "compacted_transcript", content: "old", timestamp: 1 };
+		const retained = { role: "user", content: "retained", timestamp: 2 };
+		const notice = { role: "compactionSummary", summary: "notice", retainedMessageCount: 2, timestamp: 3 };
+		const post = { role: "user", content: "post", timestamp: 4 };
+		const ordered = orderMessagesForTranscript.call({}, [compacted, retained, notice, post]);
+		expect(ordered).toEqual([compacted, retained, notice, post]);
+
+		const addToHistory = vi.fn();
+		const fakeThis = {
+			editor: { addToHistory },
+			getUserMessageText: (message: { content: string }) => message.content,
+			createLegacyHeartbeatPromptMessage: () => false,
+		};
+		addMessageToEditorHistory.call(fakeThis, compacted);
+		addMessageToEditorHistory.call(fakeThis, retained);
+		addMessageToEditorHistory.call(fakeThis, post);
+		expect(addToHistory).toHaveBeenCalledTimes(2);
+		expect(addToHistory).toHaveBeenNthCalledWith(1, "retained");
+		expect(addToHistory).toHaveBeenNthCalledWith(2, "post");
+	});
 
 	test("shows an automatic compaction loader for the full operation", async () => {
 		const statusContainer = new Container();

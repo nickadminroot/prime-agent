@@ -1,6 +1,6 @@
 # Compaction & Branch Summarization
 
-LLMs have limited context windows. When conversations grow too long, Prime Agent uses compaction to summarize older content while preserving recent work. This page covers both auto-compaction and branch summarization.
+LLMs have limited context windows. When conversations grow too long, Prime Agent uses deterministic compaction to retain a compact transcript of older content while preserving recent work. This page covers both auto-compaction and branch summarization.
 
 **Source files:**
 - [`compaction.ts`](../src/core/compaction/compaction.ts) - Auto-compaction logic
@@ -17,10 +17,10 @@ Prime Agent has two summarization mechanisms:
 
 | Mechanism | Trigger | Purpose |
 |-----------|---------|---------|
-| Compaction | Context exceeds threshold, or `/compact` | Summarize old messages to free up context |
+| Compaction | Context exceeds threshold, `/compact`, or compact skill | Retain full user/assistant text while shortening reasoning and tool output |
 | Branch summarization | `/tree` navigation | Preserve context when switching branches |
 
-Both use the same structured summary format and track file operations cumulatively.
+Branch summarization still uses an LLM. Standard context compaction does not call an LLM; it stores a short notice plus a provider-safe transcript.
 
 ## Compaction
 
@@ -34,15 +34,15 @@ contextTokens > contextWindow - reserveTokens
 
 By default, `reserveTokens` is 16384 tokens (configurable in `~/.prime/agent/settings.json` or `<project-dir>/.prime/agent/settings.json`). This leaves room for the LLM's response.
 
-You can also trigger manually with `/compact [instructions]`, where optional instructions focus the summary — for example `/compact focus on the auth refactor, remember the exact migration command`. The instructions are passed to the summarization prompt with high priority, persisted on the `CompactionEntry`, and shown on the `[compaction]` message in the TUI.
+You can also trigger manually with `/compact [instructions]`, where optional instructions focus the summary — for example `/compact focus on the auth refactor, remember the exact migration command`. The instructions are persisted on the `CompactionEntry` and included below the short compaction notice.
 
 ### How It Works
 
 1. **Find cut point**: Walk backwards from newest message, accumulating token estimates until `keepRecentTokens` (default 20k, configurable in `~/.prime/agent/settings.json` or `<project-dir>/.prime/agent/settings.json`) is reached
 2. **Extract messages**: Collect messages from the previous kept boundary (or session start) up to the cut point
-3. **Generate summary**: Call LLM to summarize with structured format, passing the previous summary as iterative context when present
-4. **Append entry**: Save `CompactionEntry` with summary and `firstKeptEntryId`
-5. **Reload**: Session reloads, using summary + messages from `firstKeptEntryId` onwards
+3. **Build transcript**: Retain user messages and assistant visible text verbatim; represent tool calls/results as bounded text and omit previous reasoning
+4. **Append entry**: Save `CompactionEntry` with the short notice, transcript, and `firstKeptEntryId`
+5. **Reload**: Session reloads, using notice + transcript + messages from `firstKeptEntryId` onwards
 
 ```
 Before compaction:
@@ -69,14 +69,14 @@ After compaction (new entry appended):
 
 What the LLM sees:
 
-  ┌────────┬─────────┬─────┬─────┬──────┬──────┬─────┬──────┐
-  │ system │ summary │ usr │ ass │ tool │ tool │ ass │ tool │
-  └────────┴─────────┴─────┴─────┴──────┴──────┴─────┴──────┘
-       ↑         ↑      └─────────────────┬────────────────┘
-    prompt   from cmp          messages from firstKeptEntryId
+  ┌────────┬──────────────┬────────┬─────────┬─────────┬─────┐
+  │ system │ compacted    │ kept   │ notice  │ post    │ ... │
+  │        │ transcript   │ tail   │         │ compact │     │
+  └────────┴──────────────┴────────┴─────────┴─────────┴─────┘
+       ↑          historical context is provider-safe
 ```
 
-On repeated compactions, the summarized span starts at the previous compaction's kept boundary (`firstKeptEntryId`), not at the compaction entry itself, falling back to the entry after the previous compaction if that kept entry cannot be found in the path. This preserves messages that survived the earlier compaction by including them in the next summarization pass as well. Prime Agent also recalculates `tokensBefore` from the rebuilt session context before writing the new `CompactionEntry`, so the token count reflects the actual pre-compaction context being replaced.
+On repeated compactions, the summarized span starts at the previous compaction's kept boundary (`firstKeptEntryId`), not at the compaction entry itself. A `null` boundary means the previous compaction retained no tail; the next pass starts after that compaction. This preserves messages that survived the earlier compaction by including them in the next summarization pass as well. Prime Agent also recalculates `tokensBefore` from the rebuilt session context before writing the new `CompactionEntry`, so the token count reflects the actual pre-compaction context being replaced.
 
 ### Split Turns
 
@@ -102,9 +102,7 @@ Split turn (one huge turn exceeds budget):
   turnPrefixMessages = [usr, ass, tool, ass, tool, tool]
 ```
 
-For split turns, Prime Agent generates two summaries and merges them:
-1. **History summary**: Previous context (if any)
-2. **Turn prefix summary**: The early part of the split turn
+For split turns, Prime Agent retains the early turn prefix using the same deterministic transcript transformation, before the kept suffix.
 
 ### Cut Point Rules
 
@@ -127,10 +125,11 @@ interface CompactionEntry<T = unknown> {
   parentId: string;
   timestamp: number;
   summary: string;
-  firstKeptEntryId: string;
+  firstKeptEntryId: string | null;
   tokensBefore: number;
   fromHook?: boolean;  // true if provided by extension (legacy field name)
   details?: T;         // implementation-specific data
+  compactedMessages?: AgentMessage[]; // internal deterministic retained transcript
   customInstructions?: string;  // user instructions from /compact <instructions>
 }
 
@@ -211,61 +210,19 @@ Same as compaction, extensions can store custom data in `details`.
 
 See [`collectEntriesForBranchSummary()`, `prepareBranchEntries()`, and `generateBranchSummary()`](../src/core/compaction/branch-summarization.ts) for the implementation.
 
-## Summary Format
+## Branch Summary Format
 
-Both compaction and branch summarization use the same structured format:
+Branch summarization continues to use the structured LLM-generated format described in [`branch-summarization.ts`](../src/core/compaction/branch-summarization.ts). Standard context compaction uses the short notice and deterministic transcript described above.
 
-```markdown
-## Goal
-[What the user is trying to accomplish]
+### Compacted Transcript
 
-## Constraints & Preferences
-- [Requirements mentioned by user]
+The default compaction stores a short notice:
 
-## Progress
-### Done
-- [x] [Completed tasks]
+`Previous reasoning and large tool outputs were shortened to compact the context.`
 
-### In Progress
-- [ ] [Current work]
+It then stores a provider-safe transcript. User messages and assistant visible text are retained verbatim. Thinking/reasoning is omitted and replaced with one marker for the entire compacted transcript, every tool transcript payload (tool arguments, tool results, bash command, and bash output) is bounded to 200 characters. Tool fragments are plain text rather than synthetic tool-call/result blocks, so stale provider-specific IDs and reasoning signatures are never replayed. Images in tool results are represented by a marker.
 
-### Blocked
-- [Issues, if any]
-
-## Key Decisions
-- **[Decision]**: [Rationale]
-
-## Next Steps
-1. [What should happen next]
-
-## Critical Context
-- [Data needed to continue]
-
-<read-files>
-path/to/file1.ts
-path/to/file2.ts
-</read-files>
-
-<modified-files>
-path/to/changed.ts
-</modified-files>
-```
-
-### Message Serialization
-
-Before summarization, messages are serialized to text via [`serializeConversation()`](../src/core/compaction/utils.ts):
-
-```
-[User]: What they said
-[Assistant thinking]: Internal reasoning
-[Assistant]: Response text
-[Assistant tool calls]: ipython(code="open('foo.ts').read()"); edit(path="bar.ts", ...)
-[Tool result]: Output from tool
-```
-
-This prevents the model from treating it as a conversation to continue.
-
-Tool results are truncated to 2000 characters during serialization. Content beyond that limit is replaced with a marker indicating how many characters were truncated. This keeps summarization requests within reasonable token budgets, since tool results, especially from `ipython` and optional `bash`, are typically the largest contributors to context size.
+The persisted transcript is inserted before messages retained from `firstKeptEntryId`; the short notice follows the retained segment. Older session files without a transcript continue to use their legacy summary unchanged.
 
 ## Custom Summarization via Extensions
 

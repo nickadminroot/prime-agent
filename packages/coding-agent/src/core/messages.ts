@@ -31,6 +31,7 @@ export const IPYTHON_STATE_RESTORED_CUSTOM_TYPE = "ipython_state_restored";
 export const SESSION_SLASH_COMMAND_CUSTOM_TYPE = "session_slash_command";
 export const SESSION_SLASH_COMMAND_RESULT_CUSTOM_TYPE = "session_slash_command_result";
 export const COMPACTION_OUTCOME_CUSTOM_TYPE = "compaction_outcome";
+export const COMPACTED_TRANSCRIPT_CUSTOM_TYPE = "compacted_transcript";
 export const RLM_CHILD_FAILURE_CUSTOM_TYPE = "rlm_child_failure";
 export const RLM_CHILD_TERMINAL_NOTICE_CUSTOM_TYPE = "rlm_child_terminal_notice";
 
@@ -71,6 +72,36 @@ export interface CompactionOutcomeMessage extends CustomMessage<CompactionOutcom
 	customType: typeof COMPACTION_OUTCOME_CUSTOM_TYPE;
 	content: string;
 	details: CompactionOutcomeDetails;
+}
+
+export interface CompactedTranscriptDetails {
+	kind: "toolCall" | "toolResult" | "bashExecution" | "custom" | "legacySummary" | "fileOperations" | "instructions";
+}
+
+export function isMessageVisibleInContext(message: AgentMessage): boolean {
+	if (message.role === "bashExecution") return !message.excludeFromContext;
+	if (message.role !== "custom") return true;
+	return (
+		message.customType !== SESSION_SLASH_COMMAND_CUSTOM_TYPE &&
+		message.customType !== SESSION_SLASH_COMMAND_RESULT_CUSTOM_TYPE &&
+		message.customType !== COMPACTION_OUTCOME_CUSTOM_TYPE
+	);
+}
+
+export function createCompactedTranscriptMessage(
+	content: string,
+	kind: CompactedTranscriptDetails["kind"],
+	timestamp: number,
+	details?: unknown,
+): CustomMessage<CompactedTranscriptDetails & { details?: unknown }> {
+	return {
+		role: "custom",
+		customType: COMPACTED_TRANSCRIPT_CUSTOM_TYPE,
+		content,
+		display: false,
+		details: { kind, ...(details === undefined ? {} : { details }) },
+		timestamp,
+	};
 }
 
 export interface RlmChildFailureDetails {
@@ -432,23 +463,14 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 		.map((m): Message | undefined => {
 			switch (m.role) {
 				case "bashExecution":
-					// Skip messages excluded from context (!! prefix)
-					if (m.excludeFromContext) {
-						return undefined;
-					}
+					if (!isMessageVisibleInContext(m)) return undefined;
 					return {
 						role: "user",
 						content: [{ type: "text", text: bashExecutionToText(m) }],
 						timestamp: m.timestamp,
 					};
 				case "custom": {
-					if (
-						m.customType === SESSION_SLASH_COMMAND_CUSTOM_TYPE ||
-						m.customType === SESSION_SLASH_COMMAND_RESULT_CUSTOM_TYPE ||
-						m.customType === COMPACTION_OUTCOME_CUSTOM_TYPE
-					) {
-						return undefined;
-					}
+					if (!isMessageVisibleInContext(m)) return undefined;
 					const content = typeof m.content === "string" ? [{ type: "text" as const, text: m.content }] : m.content;
 					return {
 						role: "user",

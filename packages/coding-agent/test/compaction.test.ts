@@ -306,6 +306,42 @@ describe("findCutPoint", () => {
 		expect(role === "user" || role === "assistant").toBe(true);
 	});
 
+	it("compacts a giant trailing tool result without retaining an orphan call", () => {
+		const user = createMessageEntry(createUserMessage("request"));
+		const assistant = createMessageEntry({
+			...createAssistantMessage(""),
+			content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "large.txt" } }],
+		});
+		const result = createMessageEntry({
+			role: "toolResult",
+			toolCallId: "call-1",
+			toolName: "read",
+			content: [{ type: "text", text: "x".repeat(50_000) }],
+			isError: false,
+			timestamp: Date.now(),
+		});
+		const entries = [user, assistant, result];
+		const cut = findCutPoint(entries, 0, entries.length, 100);
+		expect(cut.firstKeptEntryIndex).toBe(entries.length);
+		const preparation = prepareCompaction(entries, { ...DEFAULT_COMPACTION_SETTINGS, keepRecentTokens: 100 });
+		expect(preparation?.firstKeptEntryId).toBeNull();
+		const context = buildSessionContext([
+			...entries,
+			{
+				type: "compaction",
+				id: "compact",
+				parentId: result.id,
+				timestamp: new Date().toISOString(),
+				summary: "notice",
+				firstKeptEntryId: null,
+				tokensBefore: 1,
+			},
+		]);
+		expect(
+			context.messages.filter((message) => message.role === "assistant" || message.role === "toolResult"),
+		).toHaveLength(0);
+	});
+
 	it("should return startIndex if no valid cut points in range", () => {
 		const entries: SessionEntry[] = [createMessageEntry(createAssistantMessage("a"))];
 		const result = findCutPoint(entries, 0, entries.length, 1000);
@@ -377,7 +413,7 @@ describe("buildSessionContext", () => {
 		const loaded = buildSessionContext(entries);
 		// summary + kept (u2, a2) + after (u3, a3) = 5
 		expect(loaded.messages.length).toBe(5);
-		expect(loaded.messages[0]).toMatchObject({
+		expect(loaded.messages.find((message) => message.role === "compactionSummary")).toMatchObject({
 			role: "compactionSummary",
 			summary: expect.stringContaining("Summary of 1,a,2,b"),
 			retainedMessageCount: 2,
@@ -404,7 +440,9 @@ describe("buildSessionContext", () => {
 		const loaded = buildSessionContext(entries);
 		// summary + kept from u3 (u3, c) + after (u4, d) = 5
 		expect(loaded.messages.length).toBe(5);
-		expect((loaded.messages[0] as any).summary).toContain("Second summary");
+		expect((loaded.messages.find((message) => message.role === "compactionSummary") as any).summary).toContain(
+			"Second summary",
+		);
 	});
 
 	it("should keep all messages when firstKeptEntryId is first entry", () => {
@@ -549,10 +587,10 @@ describe("Large session fixture", () => {
 });
 
 // ============================================================================
-// LLM integration tests (skipped without API key)
+// Deterministic compaction tests (no provider/API calls)
 // ============================================================================
 
-describe.skipIf(!process.env.ANTHROPIC_OAUTH_TOKEN)("LLM summarization", () => {
+describe("deterministic compaction", () => {
 	it("should generate a compaction result for the large session", async () => {
 		const entries = loadLargeSessionEntries();
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
@@ -560,10 +598,13 @@ describe.skipIf(!process.env.ANTHROPIC_OAUTH_TOKEN)("LLM summarization", () => {
 		const preparation = prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS);
 		expect(preparation).toBeDefined();
 
-		const compactionResult = await compact(preparation!, model, process.env.ANTHROPIC_OAUTH_TOKEN!);
+		const compactionResult = await compact(preparation!, model, "");
 
-		expect(compactionResult.summary.length).toBeGreaterThan(100);
-		expect(compactionResult.firstKeptEntryId).toBeTruthy();
+		expect(compactionResult.summary).toBe(
+			"Previous reasoning and large tool outputs were shortened to compact the context.",
+		);
+		expect(compactionResult).not.toHaveProperty("compactedMessages");
+		expect(compactionResult.firstKeptEntryId).toBeDefined();
 		expect(compactionResult.tokensBefore).toBeGreaterThan(0);
 
 		console.log("Summary length:", compactionResult.summary.length);
@@ -581,7 +622,7 @@ describe.skipIf(!process.env.ANTHROPIC_OAUTH_TOKEN)("LLM summarization", () => {
 		const preparation = prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS);
 		expect(preparation).toBeDefined();
 
-		const compactionResult = await compact(preparation!, model, process.env.ANTHROPIC_OAUTH_TOKEN!);
+		const compactionResult = await compact(preparation!, model, "");
 
 		// Simulate appending compaction to entries by creating a proper entry
 		const lastEntry = entries[entries.length - 1];
@@ -598,8 +639,10 @@ describe.skipIf(!process.env.ANTHROPIC_OAUTH_TOKEN)("LLM summarization", () => {
 
 		// Should have summary + kept messages
 		expect(reloaded.messages.length).toBeLessThan(loaded.messages.length);
-		expect(reloaded.messages[0].role).toBe("compactionSummary");
-		expect((reloaded.messages[0] as any).summary).toContain(compactionResult.summary);
+		expect(reloaded.messages.some((message) => message.role === "compactionSummary")).toBe(true);
+		expect((reloaded.messages.find((message) => message.role === "compactionSummary") as any).summary).toContain(
+			compactionResult.summary,
+		);
 
 		console.log("Original messages:", loaded.messages.length);
 		console.log("After compaction:", reloaded.messages.length);

@@ -37,7 +37,13 @@ function msg(id: string, parentId: string | null, role: "user" | "assistant", te
 	};
 }
 
-function compaction(id: string, parentId: string | null, summary: string, firstKeptEntryId: string): CompactionEntry {
+function compaction(
+	id: string,
+	parentId: string | null,
+	summary: string,
+	firstKeptEntryId: string | null,
+	compactedMessages?: CompactionEntry["compactedMessages"],
+): CompactionEntry {
 	return {
 		type: "compaction",
 		id,
@@ -46,6 +52,7 @@ function compaction(id: string, parentId: string | null, summary: string, firstK
 		summary,
 		firstKeptEntryId,
 		tokensBefore: 1000,
+		compactedMessages,
 	};
 }
 
@@ -150,9 +157,11 @@ describe("buildSessionContext", () => {
 
 			// Should have: summary + kept (3,4) + after (6,7) = 5 messages
 			expect(ctx.messages).toHaveLength(5);
-			expect((ctx.messages[0] as any).summary).toContain("Summary of first two turns");
-			expect((ctx.messages[1] as any).content).toBe("second");
-			expect((ctx.messages[2] as any).content[0].text).toBe("response2");
+			expect((ctx.messages.find((message) => message.role === "compactionSummary") as any).summary).toContain(
+				"Summary of first two turns",
+			);
+			expect((ctx.messages[0] as any).content).toBe("second");
+			expect((ctx.messages[1] as any).content[0].text).toBe("response2");
 			expect((ctx.messages[3] as any).content).toBe("third");
 			expect((ctx.messages[4] as any).content[0].text).toBe("response3");
 		});
@@ -168,7 +177,9 @@ describe("buildSessionContext", () => {
 
 			// Summary + all messages (1,2,4)
 			expect(ctx.messages).toHaveLength(4);
-			expect((ctx.messages[0] as any).summary).toContain("Empty summary");
+			expect((ctx.messages.find((message) => message.role === "compactionSummary") as any).summary).toContain(
+				"Empty summary",
+			);
 		});
 
 		it("carries customInstructions onto the summary message", () => {
@@ -180,8 +191,39 @@ describe("buildSessionContext", () => {
 			];
 			const ctx = buildSessionContext(entries);
 
-			expect((ctx.messages[0] as any).summary).toContain("Summary");
-			expect((ctx.messages[0] as any).customInstructions).toBe("focus on the auth refactor");
+			expect((ctx.messages.find((message) => message.role === "compactionSummary") as any).summary).toContain(
+				"Summary",
+			);
+			expect((ctx.messages.find((message) => message.role === "compactionSummary") as any).customInstructions).toBe(
+				"focus on the auth refactor",
+			);
+		});
+
+		it("orders compacted transcript, retained messages, notice, and post-compaction messages", () => {
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "retained"),
+				compaction("2", "1", "notice", "1", [
+					{
+						role: "custom",
+						customType: "compacted_transcript",
+						content: "historical",
+						display: false,
+						timestamp: 1,
+					},
+				]),
+				msg("3", "2", "user", "post"),
+			];
+			const context = buildSessionContext(entries);
+			expect(context.messages.map((message) => message.role)).toEqual([
+				"custom",
+				"user",
+				"compactionSummary",
+				"user",
+			]);
+			expect((context.messages[0] as any).content).toBe("historical");
+			expect((context.messages[1] as any).content).toBe("retained");
+			expect((context.messages[2] as any).summary).toBe("notice");
+			expect((context.messages[3] as any).content).toBe("post");
 		});
 
 		it("multiple compactions uses latest", () => {
@@ -198,7 +240,9 @@ describe("buildSessionContext", () => {
 
 			// Should use second summary, keep from 4
 			expect(ctx.messages).toHaveLength(4);
-			expect((ctx.messages[0] as any).summary).toContain("Second summary");
+			expect((ctx.messages.find((message) => message.role === "compactionSummary") as any).summary).toContain(
+				"Second summary",
+			);
 		});
 	});
 
@@ -262,9 +306,11 @@ describe("buildSessionContext", () => {
 			// Main path to 7: summary + kept(3,4) + after(6,7)
 			const ctxMain = buildSessionContext(entries, "7");
 			expect(ctxMain.messages).toHaveLength(5);
-			expect((ctxMain.messages[0] as any).summary).toContain("Compacted history");
-			expect((ctxMain.messages[1] as any).content).toBe("q2");
-			expect((ctxMain.messages[2] as any).content[0].text).toBe("r2");
+			expect((ctxMain.messages.find((message) => message.role === "compactionSummary") as any).summary).toContain(
+				"Compacted history",
+			);
+			expect((ctxMain.messages[0] as any).content).toBe("q2");
+			expect((ctxMain.messages[1] as any).content[0].text).toBe("r2");
 			expect((ctxMain.messages[3] as any).content).toBe("q3");
 			expect((ctxMain.messages[4] as any).content[0].text).toBe("r3");
 

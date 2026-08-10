@@ -42,7 +42,7 @@ import type {
 import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { BashResult } from "../bash-executor.js";
-import type { CompactionPreparation, CompactionResult } from "../compaction/index.js";
+import type { CompactionPreparation, CompactionResult, InternalCompactionResult } from "../compaction/index.js";
 import type { EventBus } from "../event-bus.js";
 import type { ExecOptions, ExecResult } from "../exec.js";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.js";
@@ -970,7 +970,7 @@ export interface SessionBeforeForkResult {
 
 export interface SessionBeforeCompactResult {
 	cancel?: boolean;
-	compaction?: CompactionResult;
+	compaction?: CompactionResult | InternalCompactionResult;
 }
 
 export interface SessionBeforeTreeResult {

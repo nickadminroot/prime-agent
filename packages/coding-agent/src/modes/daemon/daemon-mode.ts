@@ -114,6 +114,7 @@ import {
 	resolveSessionRlmDepth,
 	type SessionInfo,
 	SessionManager,
+	stripInternalCompactionEntry,
 } from "../../core/session-manager.js";
 import { resolveSessionPath } from "../../core/session-resolver.js";
 import type { SessionStats } from "../../core/session-stats.js";
@@ -4474,7 +4475,9 @@ export class AgentDaemon {
 			case "get_session_tree": {
 				const state = this.getSessionState(command.activeSessionId);
 				return success(command.id, "get_session_tree", {
-					flatNodes: state.runtime.session.sessionManager.getFlatTree(),
+					flatNodes: state.runtime.session.sessionManager
+						.getFlatTree()
+						.map((node) => ({ ...node, entry: stripInternalCompactionEntry(node.entry) })),
 					leafId: state.runtime.session.sessionManager.getLeafId(),
 				});
 			}

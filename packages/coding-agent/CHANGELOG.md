@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Changed standard context compaction to retain a deterministic transcript with full user/assistant text and shortened reasoning and tool outputs.
+
 - Added logical IPython state snapshot/restore when creating subagents, while keeping child kernel runtime state isolated.
 - Added privacy-safe pseudonymous product analytics for onboarding, command use, execution modes, run outcomes, TTFT, latency, usage, tools, retries, and compactions, with disclosure and opt-out controls ([ENG-4682](https://linear.app/primeintellect/issue/ENG-4682/add-privacy-safe-posthog-analytics-to-prime-agent)).
 - Changed sent agent messages in the IPython cell UI to show only the message text with a `╰─` gutter when expanded, matching received messages, and hid the raw `agent_message.send` receipt dictionary.

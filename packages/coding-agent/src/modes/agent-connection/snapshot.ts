@@ -3,11 +3,13 @@ import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
+import { stripInternalCompactionTree } from "../../core/session-manager.js";
 import type {
 	AgentConnectionArtifactReference,
 	AgentConnectionArtifactType,
 	AgentConnectionModel,
 	AgentConnectionResourceSnapshot,
+	AgentConnectionSessionTreeNode,
 	AgentConnectionSlashCommand,
 	AgentConnectionSnapshot,
 	AgentConnectionState,
@@ -71,7 +73,7 @@ export function createAgentConnectionSnapshot(
 		...(session.state?.streamingMessage ? { streamingMessage: session.state.streamingMessage } : {}),
 		sessionContext: session.buildSessionContext(),
 		sessionTree: {
-			tree: sessionManager.getTree(),
+			tree: stripInternalCompactionTree(sessionManager.getTree()) as unknown as AgentConnectionSessionTreeNode[],
 			leafId: sessionManager.getLeafId(),
 		},
 	};

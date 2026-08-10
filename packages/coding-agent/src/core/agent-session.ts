@@ -108,9 +108,10 @@ import {
 	type CompactionResult,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
-	compact,
+	compactInternal,
 	estimateContextTokens,
 	generateBranchSummary,
+	type InternalCompactionResult,
 	prepareCompaction,
 	shouldCompact,
 } from "./compaction/index.js";
@@ -1078,6 +1079,15 @@ function attributeChildUsage(parentUsage: Usage, childUsage: Usage): void {
 // ============================================================================
 // AgentSession Class
 // ============================================================================
+
+function toPublicCompactionResult(result: InternalCompactionResult): CompactionResult {
+	return {
+		summary: result.summary,
+		firstKeptEntryId: result.firstKeptEntryId ?? "",
+		tokensBefore: result.tokensBefore,
+		details: result.details,
+	};
+}
 
 export class AgentSession {
 	readonly agent: Agent;
@@ -7025,14 +7035,11 @@ export class AgentSession {
 				throw new Error(formatNoModelSelectedMessage());
 			}
 
-			const { apiKey, headers } = await this._getRequiredRequestAuth(this.model);
-			const result = await this._performCompaction({
-				model: this.model,
-				apiKey,
-				headers,
+			const internalResult = await this._performCompaction({
 				customInstructions,
 				signal: this._compactionAbortController.signal,
 			});
+			const result = toPublicCompactionResult(internalResult);
 
 			this._emit({
 				type: "compaction_end",
@@ -7090,13 +7097,10 @@ export class AgentSession {
 	 * Error("Compaction cancelled") on abort or extension cancel.
 	 */
 	private async _performCompaction(options: {
-		model: Model<any>;
-		apiKey: string;
-		headers?: Record<string, string>;
 		customInstructions?: string;
 		signal: AbortSignal;
-	}): Promise<CompactionResult> {
-		const { model, apiKey, headers, customInstructions, signal } = options;
+	}): Promise<InternalCompactionResult> {
+		const { customInstructions, signal } = options;
 		const pathEntries = this.sessionManager.getBranch();
 		const settings = this.settingsManager.getCompactionSettings();
 
@@ -7109,7 +7113,7 @@ export class AgentSession {
 			throw new CompactionSkippedError("Session is too short to compact — try again once it grows");
 		}
 
-		let extensionCompaction: CompactionResult | undefined;
+		let extensionCompaction: CompactionResult | InternalCompactionResult | undefined;
 		let fromExtension = false;
 
 		if (this._extensionRunner.hasHandlers("session_before_compact")) {
@@ -7131,9 +7135,9 @@ export class AgentSession {
 			}
 		}
 
-		const { summary, firstKeptEntryId, tokensBefore, details } =
-			extensionCompaction ??
-			(await compact(preparation, model, apiKey, headers, customInstructions, signal, this.thinkingLevel));
+		const internalCompaction: InternalCompactionResult =
+			extensionCompaction ?? (await compactInternal(preparation, customInstructions));
+		const { summary, firstKeptEntryId, tokensBefore, details, compactedMessages } = internalCompaction;
 
 		if (signal.aborted) {
 			throw new Error("Compaction cancelled");
@@ -7146,6 +7150,7 @@ export class AgentSession {
 			details,
 			fromExtension,
 			customInstructions,
+			compactedMessages,
 		);
 		const newEntries = this.sessionManager.getEntries();
 		this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
@@ -7157,16 +7162,21 @@ export class AgentSession {
 			| CompactionEntry
 			| undefined;
 		if (savedCompactionEntry) {
+			const { compactedMessages: _compactedMessages, ...publicCompactionEntry } = savedCompactionEntry;
+			const publicEntry = {
+				...publicCompactionEntry,
+				firstKeptEntryId: savedCompactionEntry.firstKeptEntryId ?? "",
+			};
 			await this._extensionRunner.emit({
 				type: "session_compact",
-				compactionEntry: savedCompactionEntry,
+				compactionEntry: publicEntry as CompactionEntry,
 				fromExtension,
 			});
 		}
 		await this._notifyKernelStateAfterCompaction();
 		await this._reapDeletedRlmSubagentRuntimesAfterCompaction();
 
-		return { summary, firstKeptEntryId, tokensBefore, details };
+		return { summary, firstKeptEntryId, tokensBefore, details, compactedMessages };
 	}
 
 	private async _reapDeletedRlmSubagentRuntimesAfterCompaction(): Promise<void> {
@@ -8117,31 +8127,18 @@ export class AgentSession {
 		this._autoCompactionAbortController = new AbortController();
 
 		try {
-			const authResult = this.model ? await this._modelRegistry.getApiKeyAndHeaders(this.model) : undefined;
-			if (!this.model || !authResult || !authResult.ok || !authResult.apiKey) {
-				const detail =
-					!this.model || !authResult
-						? "no model is selected"
-						: authResult.ok
-							? "no API key is available"
-							: authResult.error;
-				this._endCompactionUnsuccessfully(reason, "failed", `Compaction failed: ${detail}`);
-				this._clearQueuedAutonomousContinuationsAfterSkippedThresholdCompaction(
-					reason === "threshold" && shouldContinueAfterCompaction,
-					queuedAutonomousContinuationsForThisCompaction,
-				);
+			if (!this.model) {
+				this._endCompactionUnsuccessfully(reason, "failed", "Compaction failed: no model is selected");
 				resumeAfterFailure();
 				return false;
 			}
 
-			const result = await this._performCompaction({
-				model: this.model,
-				apiKey: authResult.apiKey,
-				headers: authResult.headers,
+			const internalResult = await this._performCompaction({
 				customInstructions,
 				signal: this._autoCompactionAbortController.signal,
 			});
 
+			const result = toPublicCompactionResult(internalResult);
 			this._emit({
 				type: "compaction_end",
 				reason,

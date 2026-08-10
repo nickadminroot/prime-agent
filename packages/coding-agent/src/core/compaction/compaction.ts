@@ -9,14 +9,17 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { AssistantMessage, Model, Usage } from "@earendil-works/pi-ai";
 import { completeSimple } from "@earendil-works/pi-ai";
 import {
+	COMPACTED_TRANSCRIPT_CUSTOM_TYPE,
 	convertToLlm,
 	createBranchSummaryMessage,
+	createCompactedTranscriptMessage,
 	createCompactionSummaryMessage,
 	createCustomMessage,
 } from "../messages.js";
 import { buildSessionContext, type CompactionEntry, type SessionEntry } from "../session-manager.js";
 import {
 	computeFileLists,
+	createCompactedTranscript,
 	createFileOps,
 	extractFileOpsFromMessage,
 	type FileOperations,
@@ -111,6 +114,12 @@ export interface CompactionResult<T = unknown> {
 	tokensBefore: number;
 	/** Extension-specific data (e.g., ArtifactIndex, version markers for structured compaction) */
 	details?: T;
+}
+
+/** Internal result persisted to JSONL, never returned over public/wire APIs. */
+export interface InternalCompactionResult<T = unknown> extends Omit<CompactionResult<T>, "firstKeptEntryId"> {
+	firstKeptEntryId: string | null;
+	compactedMessages?: AgentMessage[];
 }
 
 // ============================================================================
@@ -420,19 +429,17 @@ export function findCutPoint(
 
 		// Check if we've exceeded the budget
 		if (accumulatedTokens >= keepRecentTokens) {
-			// Find the closest valid cut point at or after this entry
-			for (let c = 0; c < cutPoints.length; c++) {
-				if (cutPoints[c] >= i) {
-					cutIndex = cutPoints[c];
-					break;
-				}
-			}
+			// A trailing tool result can itself exceed the budget. Keeping from
+			// the preceding assistant would replay an orphan tool call, so use
+			// the explicit boundary after the path and compact everything.
+			const nextCut = cutPoints.find((candidate) => candidate >= i);
+			cutIndex = nextCut ?? endIndex;
 			break;
 		}
 	}
 
 	// Scan backwards from cutIndex to include any non-message entries (bash, settings, etc.)
-	while (cutIndex > startIndex) {
+	while (cutIndex > startIndex && cutIndex < endIndex) {
 		const prevEntry = entries[cutIndex - 1];
 		// Stop at session header or compaction boundaries
 		if (prevEntry.type === "compaction") {
@@ -447,6 +454,9 @@ export function findCutPoint(
 	}
 
 	// Determine if this is a split turn
+	if (cutIndex >= endIndex) {
+		return { firstKeptEntryIndex: endIndex, turnStartIndex: -1, isSplitTurn: false };
+	}
 	const cutEntry = entries[cutIndex];
 	const isUserMessage = cutEntry.type === "message" && cutEntry.message.role === "user";
 	const turnStartIndex = isUserMessage ? -1 : findTurnStartIndex(entries, cutIndex, startIndex);
@@ -617,7 +627,7 @@ export async function generateSummary(
 
 export interface CompactionPreparation {
 	/** UUID of first entry to keep */
-	firstKeptEntryId: string;
+	firstKeptEntryId: string | null;
 	/** Messages that will be summarized and discarded */
 	messagesToSummarize: AgentMessage[];
 	/** Messages that will be turned into turn prefix summary (if splitting) */
@@ -625,8 +635,10 @@ export interface CompactionPreparation {
 	/** Whether this is a split turn (cut point in middle of turn) */
 	isSplitTurn: boolean;
 	tokensBefore: number;
-	/** Summary from previous compaction, for iterative update */
+	/** Summary from previous compaction, for legacy summarization extensions */
 	previousSummary?: string;
+	/** Deterministic transcript from the previous default compaction. */
+	previousCompactedMessages: AgentMessage[];
 	/** File operations extracted from messagesToSummarize */
 	fileOps: FileOperations;
 	/** Compaction settions from settings.jsonl	*/
@@ -650,10 +662,20 @@ export function prepareCompaction(
 	}
 
 	let previousSummary: string | undefined;
+	let previousCompactedMessages: AgentMessage[] = [];
 	let boundaryStart = 0;
 	if (prevCompactionIndex >= 0) {
 		const prevCompaction = pathEntries[prevCompactionIndex] as CompactionEntry;
 		previousSummary = prevCompaction.summary;
+		previousCompactedMessages = Array.isArray(prevCompaction.compactedMessages)
+			? prevCompaction.compactedMessages
+			: [
+					createCompactedTranscriptMessage(
+						`[Previous compaction summary]: ${prevCompaction.summary}`,
+						"legacySummary",
+						Date.parse(prevCompaction.timestamp) || Date.now(),
+					),
+				];
 		const firstKeptEntryIndex = pathEntries.findIndex((entry) => entry.id === prevCompaction.firstKeptEntryId);
 		boundaryStart = firstKeptEntryIndex >= 0 ? firstKeptEntryIndex : prevCompactionIndex + 1;
 	}
@@ -665,10 +687,7 @@ export function prepareCompaction(
 
 	// Get UUID of first kept entry
 	const firstKeptEntry = pathEntries[cutPoint.firstKeptEntryIndex];
-	if (!firstKeptEntry?.id) {
-		return undefined; // Session needs migration
-	}
-	const firstKeptEntryId = firstKeptEntry.id;
+	const firstKeptEntryId = firstKeptEntry?.id ?? null;
 
 	const historyEnd = cutPoint.isSplitTurn ? cutPoint.turnStartIndex : cutPoint.firstKeptEntryIndex;
 
@@ -711,6 +730,7 @@ export function prepareCompaction(
 		isSplitTurn: cutPoint.isSplitTurn,
 		tokensBefore,
 		previousSummary,
+		previousCompactedMessages,
 		fileOps,
 		settings,
 	};
@@ -719,149 +739,73 @@ export function prepareCompaction(
 // ============================================================================
 // Main compaction function
 // ============================================================================
-
-const TURN_PREFIX_SUMMARIZATION_PROMPT = `This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
-
-Summarize the prefix to provide context for the retained suffix:
-
-## Original Request
-[What did the user ask for in this turn?]
-
-## Early Progress
-- [Key decisions and work done in the prefix]
-
-## Context for Suffix
-- [Information needed to understand the retained recent work]
-
-Be concise. Focus on what's needed to understand the kept suffix.`;
-
 /**
- * Generate summaries for compaction using prepared data.
- * Returns CompactionResult - SessionManager adds uuid/parentUuid when saving.
- *
- * @param preparation - Pre-calculated preparation from prepareCompaction()
- * @param customInstructions - Optional custom focus for the summary
+ * Perform deterministic default context compaction. The model and request
+ * parameters remain in the interface for extension compatibility.
  */
-export async function compact(
+export async function compactInternal(
 	preparation: CompactionPreparation,
-	model: Model<any>,
-	apiKey: string,
-	headers?: Record<string, string>,
 	customInstructions?: string,
-	signal?: AbortSignal,
-	thinkingLevel?: ThinkingLevel,
-): Promise<CompactionResult> {
+): Promise<InternalCompactionResult> {
 	const {
 		firstKeptEntryId,
 		messagesToSummarize,
 		turnPrefixMessages,
 		isSplitTurn,
 		tokensBefore,
-		previousSummary,
+		previousCompactedMessages,
 		fileOps,
-		settings,
 	} = preparation;
 
-	// Generate summaries (can be parallel if both needed) and merge into one
-	let summary: string;
-
-	if (isSplitTurn && turnPrefixMessages.length > 0) {
-		// Generate both summaries in parallel
-		const [historyResult, turnPrefixResult] = await Promise.all([
-			messagesToSummarize.length > 0
-				? generateSummary(
-						messagesToSummarize,
-						model,
-						settings.reserveTokens,
-						apiKey,
-						headers,
-						signal,
-						customInstructions,
-						previousSummary,
-						thinkingLevel,
-					)
-				: Promise.resolve("No prior history."),
-			generateTurnPrefixSummary(
-				turnPrefixMessages,
-				model,
-				settings.reserveTokens,
-				apiKey,
-				headers,
-				signal,
-				thinkingLevel,
-			),
-		]);
-		// Merge into single summary
-		summary = `${historyResult}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult}`;
-	} else {
-		// Just generate history summary
-		summary = await generateSummary(
-			messagesToSummarize,
-			model,
-			settings.reserveTokens,
-			apiKey,
-			headers,
-			signal,
-			customInstructions,
-			previousSummary,
-			thinkingLevel,
-		);
-	}
-
-	// Compute file lists and append to summary
+	const carriedMessages = previousCompactedMessages.filter((message) => {
+		if (message.role !== "custom" || message.customType !== COMPACTED_TRANSCRIPT_CUSTOM_TYPE) return true;
+		const details = message.details as { kind?: string } | undefined;
+		return details?.kind !== "fileOperations";
+	});
 	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
-	summary += formatFileOperations(readFiles, modifiedFiles);
-
-	if (!firstKeptEntryId) {
-		throw new Error("First kept entry has no UUID - session may need migration");
-	}
+	const fileHint = formatFileOperations(readFiles, modifiedFiles);
+	const transcriptTimestamp =
+		(messagesToSummarize.at(-1) ?? turnPrefixMessages.at(-1) ?? carriedMessages.at(-1))?.timestamp ?? 0;
+	const compactedMessages = [
+		...carriedMessages,
+		...createCompactedTranscript(messagesToSummarize),
+		...(isSplitTurn ? createCompactedTranscript(turnPrefixMessages) : []),
+		...(customInstructions
+			? [
+					createCompactedTranscriptMessage(
+						`[Compaction instructions]: ${customInstructions}`,
+						"instructions",
+						transcriptTimestamp,
+					),
+				]
+			: []),
+		...(fileHint ? [createCompactedTranscriptMessage(fileHint, "fileOperations", transcriptTimestamp)] : []),
+	];
+	const summary = "Previous reasoning and large tool outputs were shortened to compact the context.";
 
 	return {
 		summary,
 		firstKeptEntryId,
 		tokensBefore,
 		details: { readFiles, modifiedFiles } as CompactionDetails,
+		compactedMessages,
 	};
 }
-
-/**
- * Generate a summary for a turn prefix (when splitting a turn).
- */
-async function generateTurnPrefixSummary(
-	messages: AgentMessage[],
-	model: Model<any>,
-	reserveTokens: number,
-	apiKey: string,
-	headers?: Record<string, string>,
-	signal?: AbortSignal,
-	thinkingLevel?: ThinkingLevel,
-): Promise<string> {
-	const maxTokens = Math.floor(0.5 * reserveTokens); // Smaller budget for turn prefix
-	const llmMessages = convertToLlm(messages);
-	const conversationText = serializeConversation(llmMessages);
-	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
-	const summarizationMessages = [
-		{
-			role: "user" as const,
-			content: [{ type: "text" as const, text: promptText }],
-			timestamp: Date.now(),
-		},
-	];
-
-	const response = await completeSimple(
-		model,
-		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
-		model.reasoning && thinkingLevel && thinkingLevel !== "off"
-			? { maxTokens, signal, apiKey, headers, reasoning: thinkingLevel }
-			: { maxTokens, signal, apiKey, headers },
-	);
-
-	if (response.stopReason === "error") {
-		throw new Error(`Turn prefix summarization failed: ${response.errorMessage || "Unknown error"}`);
-	}
-
-	return response.content
-		.filter((c): c is { type: "text"; text: string } => c.type === "text")
-		.map((c) => c.text)
-		.join("\n");
+/** Public compaction helper; internal transcript data is intentionally omitted. */
+export async function compact(
+	preparation: CompactionPreparation,
+	_model: Model<any>,
+	_apiKey: string,
+	_headers?: Record<string, string>,
+	customInstructions?: string,
+	_signal?: AbortSignal,
+	_thinkingLevel?: ThinkingLevel,
+): Promise<CompactionResult> {
+	const result = await compactInternal(preparation, customInstructions);
+	return {
+		summary: result.summary,
+		firstKeptEntryId: result.firstKeptEntryId ?? "",
+		tokensBefore: result.tokensBefore,
+		details: result.details,
+	};
 }

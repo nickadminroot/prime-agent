@@ -16,7 +16,7 @@ import type {
 import type { ExtensionUIContext } from "../../core/extensions/types.js";
 import type { RefinementResult } from "../../core/refinement/index.js";
 import { type DeleteSessionFileResult, deleteSessionFile } from "../../core/session-file-actions.js";
-import { SessionManager } from "../../core/session-manager.js";
+import { SessionManager, stripInternalCompactionTree } from "../../core/session-manager.js";
 import type { SessionStats } from "../../core/session-stats.js";
 import { type SideQuestionRun, startSideQuestion } from "../../core/side-question.js";
 import { waitForHeadlessCompletion } from "../headless-completion.js";
@@ -163,7 +163,9 @@ export class InProcessAgentConnection implements AgentConnection {
 
 	async getSessionTree(): Promise<{ tree: AgentConnectionSessionTreeNode[]; leafId: string | null }> {
 		return {
-			tree: this.session.sessionManager.getTree(),
+			tree: stripInternalCompactionTree(
+				this.session.sessionManager.getTree(),
+			) as unknown as AgentConnectionSessionTreeNode[],
 			leafId: this.session.sessionManager.getLeafId(),
 		};
 	}

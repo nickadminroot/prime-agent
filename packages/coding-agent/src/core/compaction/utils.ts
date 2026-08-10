@@ -3,7 +3,12 @@
  */
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { Message } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
+import {
+	COMPACTED_TRANSCRIPT_CUSTOM_TYPE,
+	createCompactedTranscriptMessage,
+	isMessageVisibleInContext,
+} from "../messages.js";
 
 // ============================================================================
 // File Operation Tracking
@@ -81,6 +86,151 @@ export function formatFileOperations(readFiles: string[], modifiedFiles: string[
 
 /** Maximum characters for a tool result in serialized summaries. */
 const TOOL_RESULT_MAX_CHARS = 2000;
+
+/** Limits used by the deterministic transcript retained after compaction. */
+/** Maximum source payload characters retained for every tool transcript fragment. */
+export const COMPACTED_TOOL_PAYLOAD_MAX_CHARS = 200;
+
+const COMPACTED_REASONING_MARKER = "[Previous reasoning omitted during context compaction.]";
+const COMPACTED_IMAGE_MARKER = "[Image omitted during context compaction.]";
+
+function truncateCompactedText(text: string, maxChars: number): string {
+	if (text.length <= maxChars) return text;
+	return `${text.slice(0, maxChars)}\n[... output shortened during context compaction]`;
+}
+
+function createHistoricalAssistant(message: AssistantMessage, blocks: AssistantMessage["content"]): AssistantMessage {
+	return {
+		role: "assistant",
+		content: blocks,
+		api: message.api,
+		provider: message.provider,
+		model: message.model,
+		responseModel: message.responseModel,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: message.timestamp,
+	};
+}
+
+interface CompactedTranscriptState {
+	reasoningMarkerAdded: boolean;
+}
+
+function containsCompactedReasoningMarker(message: AgentMessage): boolean {
+	if (message.role === "assistant") {
+		return message.content.some((block) => block.type === "text" && block.text.includes(COMPACTED_REASONING_MARKER));
+	}
+	if (message.role === "custom" && typeof message.content === "string") {
+		return message.content.includes(COMPACTED_REASONING_MARKER);
+	}
+	if (message.role === "branchSummary" || message.role === "compactionSummary") {
+		return message.summary.includes(COMPACTED_REASONING_MARKER);
+	}
+	return false;
+}
+
+function serializeCompactedMessage(message: AgentMessage, state: CompactedTranscriptState): AgentMessage[] {
+	if (!isMessageVisibleInContext(message)) return [];
+	if (containsCompactedReasoningMarker(message)) state.reasoningMarkerAdded = true;
+	if (message.role === "user") return [message];
+	if (message.role === "assistant") {
+		const result: AgentMessage[] = [];
+		let assistantBlocks: AssistantMessage["content"] = [];
+		const flushAssistant = () => {
+			if (assistantBlocks.length > 0) {
+				result.push(createHistoricalAssistant(message, assistantBlocks));
+				assistantBlocks = [];
+			}
+		};
+		for (const block of message.content) {
+			switch (block.type) {
+				case "text":
+					assistantBlocks.push(block);
+					break;
+				case "thinking":
+					if (!state.reasoningMarkerAdded) {
+						assistantBlocks.push({ type: "text", text: COMPACTED_REASONING_MARKER });
+						state.reasoningMarkerAdded = true;
+					}
+					break;
+				case "toolCall": {
+					flushAssistant();
+					let args: string;
+					try {
+						args = JSON.stringify(block.arguments);
+					} catch {
+						args = "[arguments unavailable]";
+					}
+					result.push(
+						createCompactedTranscriptMessage(
+							`[Previous tool call: ${block.name} (${truncateCompactedText(args, COMPACTED_TOOL_PAYLOAD_MAX_CHARS)})]`,
+							"toolCall",
+							message.timestamp,
+						),
+					);
+					break;
+				}
+			}
+		}
+		flushAssistant();
+		return result;
+	}
+	if (message.role === "toolResult") {
+		const parts = message.content.map((block) => (block.type === "text" ? block.text : COMPACTED_IMAGE_MARKER));
+		const result = truncateCompactedText(parts.join(""), COMPACTED_TOOL_PAYLOAD_MAX_CHARS);
+		const status = message.isError ? " error" : "";
+		return [
+			createCompactedTranscriptMessage(
+				`[Previous tool result${status}: ${message.toolName}] ${result || "(empty)"}`,
+				"toolResult",
+				message.timestamp,
+			),
+		];
+	}
+
+	if (message.role === "bashExecution") {
+		return [
+			createCompactedTranscriptMessage(
+				`[Previous command: ${truncateCompactedText(message.command, COMPACTED_TOOL_PAYLOAD_MAX_CHARS)}]\n${truncateCompactedText(message.output, COMPACTED_TOOL_PAYLOAD_MAX_CHARS)}`,
+				"bashExecution",
+				message.timestamp,
+			),
+		];
+	}
+	if (message.role === "branchSummary" || message.role === "compactionSummary") {
+		return [
+			createCompactedTranscriptMessage(`[Previous context]: ${message.summary}`, "legacySummary", message.timestamp),
+		];
+	}
+	if (message.role !== "custom") return [];
+	return [
+		{
+			...message,
+			customType: COMPACTED_TRANSCRIPT_CUSTOM_TYPE,
+			display: false,
+			details: { kind: "custom", originalCustomType: message.customType },
+		},
+	];
+}
+
+/**
+ * Build a provider-safe, deterministic transcript for discarded context.
+ * User messages are retained verbatim. Assistant visible text remains an
+ * assistant message, while tool and other historical artifacts become hidden
+ * custom messages converted to user text only at the provider seam.
+ */
+export function createCompactedTranscript(messages: AgentMessage[]): AgentMessage[] {
+	const state: CompactedTranscriptState = { reasoningMarkerAdded: false };
+	return messages.flatMap((message) => serializeCompactedMessage(message, state));
+}
 
 /**
  * Truncate text to a maximum character length for summarization.

@@ -99,10 +99,10 @@ describe("AgentSession compaction characterization", () => {
 
 		expect(result.summary).toBe("summary from extension");
 		expect(compactionEntries).toHaveLength(1);
-		expect(harness.session.messages[0]?.role).toBe("compactionSummary");
+		expect(harness.session.messages.some((message) => message.role === "compactionSummary")).toBe(true);
 	});
 
-	it("compacts through the model summarizer, persists metadata, emits events, and remains usable", async () => {
+	it("compacts deterministically, persists metadata, emits events, and remains usable", async () => {
 		const harness = await createHarness({
 			settings: { compaction: { keepRecentTokens: 1 } },
 			persistSession: true,
@@ -111,8 +111,6 @@ describe("AgentSession compaction characterization", () => {
 		harness.setResponses([
 			fauxAssistantMessage("one response"),
 			fauxAssistantMessage("two response"),
-			fauxAssistantMessage("model-generated summary"),
-			fauxAssistantMessage("model-generated turn summary"),
 			fauxAssistantMessage("still usable"),
 		]);
 		await harness.session.prompt("one");
@@ -121,19 +119,20 @@ describe("AgentSession compaction characterization", () => {
 		const result = await harness.session.compact();
 		const entry = harness.sessionManager.getEntries().find((candidate) => candidate.type === "compaction");
 
-		expect(result.summary).toContain("model-generated summary");
+		expect(result.summary).toBe("Previous reasoning and large tool outputs were shortened to compact the context.");
+		expect((entry as any)?.compactedMessages?.length).toBeGreaterThan(0);
 		expect(result.tokensBefore).toBeGreaterThan(0);
 		expect(result.firstKeptEntryId).toBeTruthy();
 		expect(entry).toMatchObject({
 			type: "compaction",
-			summary: expect.stringContaining("model-generated summary"),
+			summary: "Previous reasoning and large tool outputs were shortened to compact the context.",
 			firstKeptEntryId: result.firstKeptEntryId,
 			tokensBefore: result.tokensBefore,
 			fromHook: false,
 		});
-		expect(harness.session.messages[0]).toMatchObject({
+		expect(harness.session.messages.find((message) => message.role === "compactionSummary")).toMatchObject({
 			role: "compactionSummary",
-			summary: expect.stringContaining("model-generated summary"),
+			summary: "Previous reasoning and large tool outputs were shortened to compact the context.",
 		});
 		expect(harness.eventsOfType("compaction_start")).toEqual([expect.objectContaining({ reason: "manual" })]);
 		expect(harness.eventsOfType("compaction_end")).toEqual([
@@ -150,6 +149,7 @@ describe("AgentSession compaction characterization", () => {
 			role: "assistant",
 			content: [{ type: "text", text: "still usable" }],
 		});
+		expect(harness.eventsOfType("compaction_end")[0]?.result).not.toHaveProperty("compactedMessages");
 	});
 
 	it("renders an executing /compact as activity instead of queued work", async () => {
@@ -343,11 +343,48 @@ describe("AgentSession compaction characterization", () => {
 		await expect(harness.session.compact()).rejects.toThrow("No model selected");
 	});
 
-	it("throws when compacting without configured auth", async () => {
-		const harness = await createHarness({ withConfiguredAuth: false });
+	it("compacts a giant trailing tool result with an empty retained tail", async () => {
+		const harness = await createHarness({
+			withConfiguredAuth: false,
+			settings: { compaction: { keepRecentTokens: 100 } },
+		});
 		harnesses.push(harness);
+		harness.sessionManager.appendMessage({ role: "user", content: "read it", timestamp: Date.now() });
+		harness.sessionManager.appendMessage({
+			...createAssistant(harness, {}),
+			content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "large.txt" } }],
+		});
+		harness.sessionManager.appendMessage({
+			role: "toolResult",
+			toolCallId: "call-1",
+			toolName: "read",
+			content: [{ type: "text", text: "x".repeat(50_000) }],
+			isError: false,
+			timestamp: Date.now(),
+		});
 
-		await expect(harness.session.compact()).rejects.toThrow(`No API key found for ${harness.getModel().provider}.`);
+		const publicResult = await harness.session.compact();
+		const entry = harness.sessionManager.getEntries().find((candidate) => candidate.type === "compaction");
+		expect(publicResult.firstKeptEntryId).toBe("");
+		expect(harness.eventsOfType("compaction_end")[0]?.result?.firstKeptEntryId).toBe("");
+		expect(entry?.type === "compaction" && entry.firstKeptEntryId).toBeNull();
+		expect(harness.session.messages.some((message) => message.role === "toolResult")).toBe(false);
+	});
+
+	it("compacts without configured auth", async () => {
+		const harness = await createHarness({
+			withConfiguredAuth: false,
+			settings: { compaction: { keepRecentTokens: 1 } },
+		});
+		harnesses.push(harness);
+		harness.sessionManager.appendMessage({ role: "user", content: "one", timestamp: Date.now() });
+		harness.sessionManager.appendMessage(fauxAssistantMessage("one response"));
+		harness.sessionManager.appendMessage({ role: "user", content: "two", timestamp: Date.now() });
+		harness.sessionManager.appendMessage(fauxAssistantMessage("two response"));
+
+		await expect(harness.session.compact()).resolves.toMatchObject({
+			summary: "Previous reasoning and large tool outputs were shortened to compact the context.",
+		});
 	});
 
 	it("cancels in-progress manual compaction when abortCompaction is called", async () => {
