@@ -17,6 +17,7 @@ import {
 	readFileSync,
 	renameSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 	writeSync,
 } from "node:fs";
@@ -2304,11 +2305,15 @@ export class AgentDaemon {
 		parentState: ActiveSessionState,
 		options: CreateRlmSubagentRuntimeOptions,
 	): Promise<AgentSessionRuntime> {
-		const sessionManager = SessionManager.create(options.parentSession.sessionManager.getCwd(), options.sessionDir);
-		sessionManager.newSession({
-			parentSession: options.parentSession.sessionFile,
-			rlmDepth: options.rlmDepth,
-		});
+		const parentSessionFile = options.parentSession.sessionFile;
+		const canForkParentSession =
+			parentSessionFile !== undefined && existsSync(parentSessionFile) && statSync(parentSessionFile).size > 0;
+		const sessionManager = canForkParentSession
+			? SessionManager.forkFrom(parentSessionFile, options.parentSession.sessionManager.getCwd(), options.sessionDir)
+			: SessionManager.create(options.parentSession.sessionManager.getCwd(), options.sessionDir);
+		if (parentSessionFile && !canForkParentSession) {
+			sessionManager.newSession({ parentSession: parentSessionFile, rlmDepth: options.rlmDepth });
+		}
 		let stateRef: ActiveSessionState | undefined;
 		// Subagents inherit the parent's client env (e.g. herdr pane identity).
 		const runtime = await withClientEnv(parentState.clientEnv, () =>

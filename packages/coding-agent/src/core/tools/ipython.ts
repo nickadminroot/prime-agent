@@ -16,7 +16,7 @@ import {
 	KernelManager,
 	type KernelSentAgentMessage,
 } from "../kernel/index.js";
-import { manifestPathIn, type RestoreResult, snapshotPathIn } from "../kernel/state-snapshot.js";
+import { manifestPathIn, type RestoreResult, type SnapshotResult, snapshotPathIn } from "../kernel/state-snapshot.js";
 import type { PythonSkillRuntimeInfo } from "../skills.js";
 import { parseIpythonBashCell } from "./ipython-cell-code.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
@@ -367,6 +367,17 @@ export class IpythonKernelProvisioner {
 	async listNamespaceNames(signal?: AbortSignal): Promise<string[] | null> {
 		const m = this.startedManager ?? (await this.managerPromise?.catch(() => undefined));
 		return (await m?.listNamespaceNames(signal)) ?? null;
+	}
+
+	/** Export a best-effort copy of the live namespace for a logical child-kernel fork. */
+	async snapshotStateTo(artifactDir: string): Promise<SnapshotResult | null> {
+		const m = this.startedManager ?? (await this.managerPromise?.catch(() => undefined));
+		return (
+			(await m?.snapshotStateTo({
+				path: snapshotPathIn(artifactDir),
+				manifestPath: manifestPathIn(artifactDir),
+			})) ?? null
+		);
 	}
 
 	/** Dispose the kernel owned by this provisioner, including one still starting up. */

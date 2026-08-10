@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { KernelManager } from "../src/core/kernel/index.js";
+import { IpythonKernelProvisioner } from "../src/core/tools/ipython.js";
 
 /** Find a python that can launch an ipykernel and has dill, or null to skip. */
 function resolveKernelPython(): string | null {
@@ -73,6 +74,63 @@ describeIfKernel("kernel state snapshot round-trip (real kernel)", { tags: ["ker
 			expect(echo.stdout.trim()).toBe("42 84 6");
 		} finally {
 			await reader.dispose();
+		}
+	}, 60_000);
+
+	it("exports a live namespace to a child target and keeps later mutations isolated", async () => {
+		const transferDir = mkdtempSync(join(tmpdir(), "prime-agent-state-transfer-"));
+		const transferPath = join(transferDir, "kernel-state.dill");
+		const transferManifestPath = join(transferDir, "kernel-state.json");
+		const writer = newManager();
+		try {
+			await writer.execute("shared_value = 42\nimport math");
+			const snapshot = await writer.snapshotStateTo({ path: transferPath, manifestPath: transferManifestPath });
+			expect(snapshot?.saved).toEqual(expect.arrayContaining(["shared_value", "math"]));
+			expect(existsSync(transferPath)).toBe(true);
+			expect(existsSync(transferManifestPath)).toBe(true);
+
+			const reader = new KernelManager({
+				python: python as string,
+				cwd: dir,
+				snapshot: { path: transferPath, manifestPath: transferManifestPath },
+			});
+			try {
+				const restore = await reader.restoreState();
+				expect(restore?.restored).toEqual(expect.arrayContaining(["shared_value", "math"]));
+				await reader.execute("shared_value = 99");
+				const parentValue = await writer.execute("print(shared_value)");
+				expect(parentValue.stdout.trim()).toBe("42");
+			} finally {
+				await reader.dispose();
+			}
+		} finally {
+			await writer.dispose();
+			rmSync(transferDir, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	it("transfers state through provisioners before child bootstrap", async () => {
+		const parentArtifactDir = mkdtempSync(join(tmpdir(), "prime-agent-state-parent-"));
+		const childArtifactDir = mkdtempSync(join(tmpdir(), "prime-agent-state-child-"));
+		const parent = new IpythonKernelProvisioner(dir, { python: python as string, snapshotDir: parentArtifactDir });
+		const child = new IpythonKernelProvisioner(dir, { python: python as string, snapshotDir: childArtifactDir });
+		try {
+			const parentManager = await parent.ensure();
+			await parentManager.execute("logical_fork_value = 42\nimport math");
+			const snapshot = await parent.snapshotStateTo(childArtifactDir);
+			expect(snapshot?.saved).toEqual(expect.arrayContaining(["logical_fork_value", "math"]));
+
+			const childManager = await child.ensure();
+			const childValue = await childManager.execute("print(logical_fork_value, math.sqrt(16))");
+			expect(childValue.stdout.trim()).toBe("42 4.0");
+			await childManager.execute("logical_fork_value = 99");
+			const parentValue = await parentManager.execute("print(logical_fork_value)");
+			expect(parentValue.stdout.trim()).toBe("42");
+		} finally {
+			await child.dispose();
+			await parent.dispose();
+			rmSync(parentArtifactDir, { recursive: true, force: true });
+			rmSync(childArtifactDir, { recursive: true, force: true });
 		}
 	}, 60_000);
 

@@ -1,5 +1,8 @@
 import { DEFAULT_RLM_EXTRA_IMPORT_LABELS } from "../kernel/bootstrap.js";
 
+const SUBAGENT_IPYTHON_ISOLATION_PROMPT =
+	"Each subagent runs in a separate fresh IPython kernel. Forking preserves the parent conversation/session history and attempts a best-effort snapshot/restore of the parent's picklable top-level IPython state into the child, but it does NOT share the live kernel namespace or runtime handles. Values that cannot be serialized, open handles, sockets, tasks, and IPython/rlm internals are not preserved; recreate them or pass data through the task prompt or files.";
+
 export interface RlmPromptOptions {
 	cwd: string;
 	skillsDir?: string;
@@ -26,6 +29,8 @@ const IPYTHON_CONTROL_PROMPT = [
 	"",
 	"Python state in the kernel, by contrast, persists across cells: named variables, helper functions, classes, imports, notes, parsed outputs, and helper data structures all remain available in every later turn. Tool calls are themselves Python `await` expressions, so their return values can be bound to variables and composed into program logic just like any other call.",
 	"",
+	SUBAGENT_IPYTHON_ISOLATION_PROMPT,
+	"",
 	"Continual harness state is available as `rlm.harness` and `rlm.get_harness_state()`. CRUD calls are local to this Prime Agent session by default: `rlm.harness.create_memory(...)`, `rlm.harness.update_memory(...)`, `rlm.harness.delete_memory(...)`, `rlm.harness.create_skill(...)`, `rlm.harness.update_skill(...)`, `rlm.harness.delete_skill(...)`, `rlm.harness.create_subagent(...)`, `rlm.harness.update_subagent(...)`, `rlm.harness.delete_subagent(...)`, `rlm.harness.create_prompt_note(...)`, `rlm.harness.update_prompt_note(...)`, `rlm.harness.delete_prompt_note(...)`, plus `rlm.harness.record_refinement(...)` and `rlm.harness.overview()`. Use `global_=True` only for stable cross-session lessons; Python reserves `global`, so literal `global=True` is invalid syntax.",
 	"",
 	"Terminology: continual harness names the persisted prompt, memory, skill, and subagent layer; RLM names the runtime, IPython kernel, and native call interface exposed to the model.",
@@ -49,6 +54,9 @@ export function buildChildAgentDoctrine(options: ChildAgentDoctrineOptions): str
 	const lines = [
 		`You are a child agent spawned by ${options.parentAgent ?? "your parent agent"}. Task prompts are labeled \`[task from parent]\`.`,
 	];
+	if (hasIpython) {
+		lines.push(SUBAGENT_IPYTHON_ISOLATION_PROMPT);
+	}
 	if (hasAgentMessage && hasIpython) {
 		lines.push(
 			'When a task calls for an answer, reply explicitly with `await agent_message.send(message, receiver_role="parent")`. Not every message or task needs a reply; continue cleanup after sending and go idle normally.',

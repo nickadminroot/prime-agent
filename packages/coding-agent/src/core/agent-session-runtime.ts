@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { AgentSession } from "./agent-session.js";
 import type { AgentSessionRuntimeConfig } from "./agent-session-config.js";
@@ -333,12 +333,20 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 	}
 
 	async createRlmSubagentRuntime(options: CreateRlmSubagentRuntimeOptions): Promise<RlmSubagentRuntime> {
-		const sessionManager = SessionManager.create(options.parentSession.sessionManager.getCwd(), options.sessionDir);
-		if (options.parentSession.sessionFile) {
-			sessionManager.newSession({
-				parentSession: options.parentSession.sessionFile,
-				rlmDepth: options.rlmDepth,
-			});
+		// Child kernels are fresh processes. Export the parent's live namespace into the
+		// child artifact directory before the child session starts; its provisioner
+		// already restores this snapshot before rebuilding the runtime bootstrap.
+		mkdirSync(options.sessionDir, { recursive: true });
+		await options.parentSession.snapshotIpythonStateTo(options.sessionDir).catch(() => null);
+
+		const parentSessionFile = options.parentSession.sessionFile;
+		const canForkParentSession =
+			parentSessionFile !== undefined && existsSync(parentSessionFile) && statSync(parentSessionFile).size > 0;
+		const sessionManager = canForkParentSession
+			? SessionManager.forkFrom(parentSessionFile, options.parentSession.sessionManager.getCwd(), options.sessionDir)
+			: SessionManager.create(options.parentSession.sessionManager.getCwd(), options.sessionDir);
+		if (parentSessionFile && !canForkParentSession) {
+			sessionManager.newSession({ parentSession: parentSessionFile, rlmDepth: options.rlmDepth });
 		}
 		const runtime = await this.scopedBuild(() =>
 			createAgentSessionRuntime(this.createRuntime, {

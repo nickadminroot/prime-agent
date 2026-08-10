@@ -1404,7 +1404,13 @@ export class KernelManager {
 	 */
 	async snapshotState(): Promise<SnapshotResult | null> {
 		const cfg = this.options.snapshot;
-		if (!cfg || !this.isRunning) return null;
+		if (!cfg) return null;
+		return this.snapshotStateTo(cfg);
+	}
+
+	/** Serialize the live namespace to an explicit target without changing the configured session snapshot. */
+	async snapshotStateTo(cfg: KernelSnapshotConfig): Promise<SnapshotResult | null> {
+		if (!this.isRunning) return null;
 		const code = buildSnapshotCode(cfg.path, cfg.manifestPath, cfg.maxBytes ?? DEFAULT_SNAPSHOT_MAX_BYTES);
 		try {
 			const r = await this.enqueueExecute(code, { maxOutputChars: SNAPSHOT_MAX_OUTPUT_CHARS, internal: true });

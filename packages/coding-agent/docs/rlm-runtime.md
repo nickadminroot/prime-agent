@@ -59,6 +59,8 @@ sequenceDiagram
     H->>H: update registry and attribute usage
 ```
 
+Child startup performs a best-effort logical fork of the parent's IPython namespace. The host serializes picklable top-level values into the child artifact directory, and the child's fresh kernel restores them before rebuilding its `rlm` and skill bootstrap. The live kernel process is never forked: ZMQ sockets, event loops, tasks, open handles, and other non-serializable runtime state remain isolated.
+
 ## Component Ownership
 
 | Component | Responsibility |

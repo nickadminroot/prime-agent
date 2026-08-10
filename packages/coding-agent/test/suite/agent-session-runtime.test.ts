@@ -329,6 +329,7 @@ describe("AgentSessionRuntime characterization", () => {
 	it("publishes in-process RLM sessions before create resolves and rejects cancelled startup", async () => {
 		const { runtime, faux, tempDir } = await createRuntimeForTest(() => {});
 		const parentSession = runtime.session;
+		const snapshotIpythonStateTo = vi.spyOn(parentSession, "snapshotIpythonStateTo").mockResolvedValue(null);
 		const getRunStatus = vi.spyOn(parentSession, "getRlmChildRunStatus").mockReturnValue("running");
 		let createResolved = false;
 		const onSessionPublished = vi.fn((session: AgentSession) => {
@@ -360,6 +361,7 @@ describe("AgentSessionRuntime characterization", () => {
 		});
 		createResolved = true;
 		expect(onSessionPublished).toHaveBeenCalledOnce();
+		expect(snapshotIpythonStateTo).toHaveBeenCalledWith(join(tempDir, "in-process-child"));
 		await runtime.deleteRlmSubagentRuntime("in-process-child", childRuntime.session);
 
 		getRunStatus.mockReturnValue("cancelled");
