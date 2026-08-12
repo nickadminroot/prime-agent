@@ -18,13 +18,21 @@ npm run build
 
 `prime-agent.sh` по умолчанию запускает исходники через `tsx`; `--dist` использует собранный bundle. После изменения исходников daemon станет `stale`.
 
-Запустите обычную интерактивную сессию `prime-agent` из отдельного shell: если все сессии daemon не заняты, клиент безопасно заменит stale-daemon, а idle-сессии будут восстановлены с диска. Если есть busy-сессии, CLI запросит явное подтверждение; не подтверждайте замену, пока их работа не завершена. Проверяйте результат:
+Для hot-restart используйте штатный coordinator обновления, но запускайте его **из отдельной tmux-сессии**, а не foreground-вызовом внутри IPython/agent worker: coordinator останавливает daemon, поэтому такой worker будет прерван до возврата tool call. Он сохраняет restart-manifest, запускает successor daemon и восстанавливает сессии. Используйте launcher этого checkout, а не `prime-agent` из `PATH` (он может быть другой версии):
 
 ```bash
-prime-agent status
+ROOT=/home/nickadminroot/projects/prime-agent
+STATUS="$HOME/.prime/agent/update-restarts/manual-hot-reload-$(date +%s).json"
+mkdir -p "$(dirname "$STATUS")"
+tmux new-session -d -s prime-agent-hot-reload   "exec $ROOT/prime-agent.sh update --internal-update-restart-coordinator \
+    --daemon-socket /tmp/prime-agent-$(id -u)/daemon.sock \
+    --internal-update-restart-status '$STATUS'"
+# Monitor: tmux attach -t prime-agent-hot-reload
+# Result:  cat "$STATUS"
+$ROOT/prime-agent.sh status
 ```
 
-В статусе должен быть один daemon со статусом `current`. Не завершайте вручную родительский `prime-agent.sh`/интерактивную сессию и не используйте `prime-agent shutdown` или `prime-agent doctor --fix` для обычного обновления: это может остановить active workers.
+После `phase: "complete"` в `$STATUS` в статусе должен быть один daemon `current`. Не завершайте вручную родительский `prime-agent.sh`/интерактивную сессию и не используйте `prime-agent shutdown` или `prime-agent doctor --fix` для обычного обновления: это может остановить active workers.
 ## Ожидаемые тестовые ограничения окружения
 
 Некоторые тесты требуют чистого процесса и не должны запускаться с унаследованными переменными активной RLM-сессии или daemon:
