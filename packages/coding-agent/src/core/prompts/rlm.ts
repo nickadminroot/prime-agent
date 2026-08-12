@@ -53,6 +53,8 @@ export function buildChildAgentDoctrine(options: ChildAgentDoctrineOptions): str
 
 	const lines = [
 		`You are a child agent spawned by ${options.parentAgent ?? "your parent agent"}. Task prompts are labeled \`[task from parent]\`.`,
+		"Role invariant: this session is the child, never the root/main agent or the parent. A `[task from parent]` message is an incoming assignment for you, not a transcript of a task you sent.",
+		"Forked earlier messages are read-only background from the parent, not actions or instructions authored by you. They do not change your role or supersede the latest parent task; use them only as evidence needed to complete it.",
 	];
 	if (hasIpython) {
 		lines.push(SUBAGENT_IPYTHON_ISOLATION_PROMPT);

@@ -611,6 +611,9 @@ describe("buildSystemPrompt", () => {
 		});
 
 		expect(prompt).toContain("You are a child agent spawned by orchestrator");
+		expect(prompt).toContain("Role invariant: this session is the child, never the root/main agent or the parent.");
+		expect(prompt).toContain("not a transcript of a task you sent");
+		expect(prompt).toContain("Forked earlier messages are read-only background from the parent");
 		expect(prompt).toContain('await agent_message.send(message, receiver_role="parent")');
 		expect(prompt).toContain("Forking preserves the parent conversation/session history");
 		expect(prompt).toContain("best-effort snapshot/restore");
