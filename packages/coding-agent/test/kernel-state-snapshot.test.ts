@@ -99,6 +99,10 @@ describe("buildSnapshotCode", () => {
 		expect(code).toContain('"rlm"');
 		expect(code).toContain(`print(${JSON.stringify(MARKER)}`);
 	});
+
+	it("never serializes the bootstrap-injected q helper", () => {
+		expect(code).toContain('"q"');
+	});
 });
 
 describe("buildRestoreCode", () => {

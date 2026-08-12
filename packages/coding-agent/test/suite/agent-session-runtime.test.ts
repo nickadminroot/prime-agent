@@ -377,6 +377,84 @@ describe("AgentSessionRuntime characterization", () => {
 		expect((runtime as unknown as RuntimeSubagentMapAccess).subagentRuntimes.has("cancelled-child")).toBe(false);
 	});
 
+	it("waits for the parent kernel snapshot before publishing an in-process RLM session", async () => {
+		const { runtime, faux, tempDir } = await createRuntimeForTest(() => {});
+		const parentSession = runtime.session;
+		let resolveSnapshot!: () => void;
+		const snapshotIpythonStateTo = vi.spyOn(parentSession, "snapshotIpythonStateTo").mockReturnValue(
+			new Promise<null>((resolve) => {
+				resolveSnapshot = () => resolve(null);
+			}),
+		);
+		const onSessionPublished = vi.fn();
+		let createResolved = false;
+		const createPromise = runtime
+			.createRlmSubagentRuntime({
+				parentSession,
+				prompt: "run in process",
+				model: faux.getModel(),
+				thinkingLevel: "off" as const,
+				serviceTier: null,
+				scopedModels: [],
+				activeToolNames: [],
+				customTools: [],
+				includeGoals: false,
+				includeCompactSkill: false,
+				rlmDepth: 1,
+				rlmMaxDepth: 2,
+				id: "snapshot-gated-child",
+				sessionName: "snapshot-gated-worker",
+				sessionDir: join(tempDir, "snapshot-gated-child"),
+				rlmParentNodeId: "snapshot-gated-child",
+				onSessionPublished,
+			})
+			.then((childRuntime) => {
+				createResolved = true;
+				return childRuntime;
+			});
+
+		await vi.waitFor(() => expect(snapshotIpythonStateTo).toHaveBeenCalledOnce());
+		// The session must not be published while the parent snapshot is still in flight.
+		await Promise.resolve();
+		expect(onSessionPublished).not.toHaveBeenCalled();
+		expect(createResolved).toBe(false);
+
+		resolveSnapshot();
+		const childRuntime = await createPromise;
+		expect(onSessionPublished).toHaveBeenCalledOnce();
+		expect(createResolved).toBe(true);
+		await runtime.deleteRlmSubagentRuntime("snapshot-gated-child", childRuntime.session);
+	});
+
+	it("creates an in-process RLM session when the parent kernel snapshot fails", async () => {
+		const { runtime, faux, tempDir } = await createRuntimeForTest(() => {});
+		const parentSession = runtime.session;
+		vi.spyOn(parentSession, "snapshotIpythonStateTo").mockRejectedValue(new Error("snapshot failed"));
+		const onSessionPublished = vi.fn();
+		const childRuntime = await runtime.createRlmSubagentRuntime({
+			parentSession,
+			prompt: "run in process",
+			model: faux.getModel(),
+			thinkingLevel: "off" as const,
+			serviceTier: null,
+			scopedModels: [],
+			activeToolNames: [],
+			customTools: [],
+			includeGoals: false,
+			includeCompactSkill: false,
+			rlmDepth: 1,
+			rlmMaxDepth: 2,
+			id: "snapshot-failed-child",
+			sessionName: "snapshot-failed-worker",
+			sessionDir: join(tempDir, "snapshot-failed-child"),
+			rlmParentNodeId: "snapshot-failed-child",
+			onSessionPublished,
+		});
+		expect(onSessionPublished).toHaveBeenCalledOnce();
+		expect(childRuntime.session).toBeDefined();
+		await runtime.deleteRlmSubagentRuntime("snapshot-failed-child", childRuntime.session);
+	});
+
 	it("releases a failed child run from the inline runtime host", async () => {
 		const { runtime } = await createRuntimeForTest(() => {});
 		const deleteRlmSubagentRuntime = vi.spyOn(runtime, "deleteRlmSubagentRuntime");

@@ -9056,7 +9056,9 @@ export class AgentSession {
 		return await this._createInlineRlmSubagentRuntime(options);
 	}
 
-	private _createInlineRlmSubagentRuntime(options: CreateRlmSubagentRuntimeOptions): RlmSubagentRuntime {
+	private async _createInlineRlmSubagentRuntime(
+		options: CreateRlmSubagentRuntimeOptions,
+	): Promise<RlmSubagentRuntime> {
 		mkdirSync(options.sessionDir, { recursive: true });
 
 		// Create the child session file before any await so the child's session is
@@ -9086,7 +9088,11 @@ export class AgentSession {
 		// otherwise defer the write until the child's first assistant message.
 		childSessionManager.flushNow();
 
-		void this.snapshotIpythonStateTo(options.sessionDir).catch(() => null);
+		// Wait for the best-effort parent kernel snapshot to land before the child
+		// starts, so its kernel restore reads a complete namespace instead of racing
+		// the parent's atomic replace. Failures are ignored — inheritance remains
+		// best-effort (mirrors the daemon-host path in agent-session-runtime.ts).
+		await this.snapshotIpythonStateTo(options.sessionDir).catch(() => null);
 
 		const childAgent = new Agent({
 			initialState: {
