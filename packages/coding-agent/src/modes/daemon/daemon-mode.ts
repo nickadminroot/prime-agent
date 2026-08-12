@@ -2316,6 +2316,7 @@ export class AgentDaemon {
 					options.parentSession.sessionManager.getCwd(),
 					options.sessionDir,
 					options.rlmDepth,
+					options.stripReasoning,
 				)
 			: SessionManager.create(options.parentSession.sessionManager.getCwd(), options.sessionDir);
 		if (!canForkParentSession) {

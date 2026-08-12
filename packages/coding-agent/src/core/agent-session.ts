@@ -225,6 +225,7 @@ import {
 	createRlmRunHostHandler,
 	findRlmModelMatches,
 	normalizeRequestedRlmReasoningEffort,
+	normalizeRequestedRlmStripReasoning,
 	normalizeRequestedRlmSubagentModel,
 	normalizeRequestedRlmSubagentSessionName,
 	type RlmDeleteSubagentResult,
@@ -5829,6 +5830,9 @@ export class AgentSession {
 						skipAbort: true,
 					});
 					break;
+				case "strip-reasoning":
+					this.sessionManager.stripReasoning();
+					break;
 				case "refine": {
 					const options = parseRefineCommandOptions(input.command.args);
 					const result = await this.refine(options, { skipAbort: true });
@@ -9018,6 +9022,7 @@ export class AgentSession {
 		sessionDir: string;
 		model: Model<any>;
 		thinkingLevel?: ThinkingLevel;
+		stripReasoning?: boolean;
 	}): CreateRlmSubagentRuntimeOptions {
 		return {
 			parentSession: this,
@@ -9028,6 +9033,7 @@ export class AgentSession {
 			sessionDir: options.sessionDir,
 			model: options.model,
 			thinkingLevel: clampThinkingLevel(options.model, options.thinkingLevel ?? this.thinkingLevel) as ThinkingLevel,
+			stripReasoning: options.stripReasoning ?? true,
 			serviceTier:
 				this.serviceTier === "priority" && !supportsFastMode(options.model) ? "default" : this.serviceTier,
 			scopedModels: [...this._scopedModels],
@@ -9059,7 +9065,13 @@ export class AgentSession {
 		const canForkParentSession =
 			parentSessionFile !== undefined && existsSync(parentSessionFile) && statSync(parentSessionFile).size > 0;
 		const childSessionManager = canForkParentSession
-			? SessionManager.forkFrom(parentSessionFile, this._cwd, options.sessionDir, options.rlmDepth)
+			? SessionManager.forkFrom(
+					parentSessionFile,
+					this._cwd,
+					options.sessionDir,
+					options.rlmDepth,
+					options.stripReasoning,
+				)
 			: SessionManager.create(this._cwd, options.sessionDir);
 		if (!canForkParentSession) {
 			childSessionManager.newSession({ parentSession: parentSessionFile, rlmDepth: options.rlmDepth });
@@ -9705,7 +9717,13 @@ export class AgentSession {
 		kwargs: Record<string, unknown> = {},
 		spawnCode?: string,
 	): Promise<RlmSpawnHandle> {
-		const { name: rawName, model: rawModel, reasoning_effort: rawReasoningEffort, ...unsupported } = kwargs;
+		const {
+			name: rawName,
+			model: rawModel,
+			reasoning_effort: rawReasoningEffort,
+			strip_reasoning: rawStripReasoning,
+			...unsupported
+		} = kwargs;
 		const unsupportedKwargs = Object.keys(unsupported);
 		if (unsupportedKwargs.length > 0) {
 			throw new Error(`Unsupported rlm.run kwargs: ${unsupportedKwargs.sort().join(", ")}`);
@@ -9713,6 +9731,7 @@ export class AgentSession {
 		const requestedSessionName = normalizeRequestedRlmSubagentSessionName(rawName);
 		const requestedModel = normalizeRequestedRlmSubagentModel(rawModel);
 		const requestedReasoningEffort = normalizeRequestedRlmReasoningEffort(rawReasoningEffort);
+		const requestedStripReasoning = normalizeRequestedRlmStripReasoning(rawStripReasoning);
 		if (requestedSessionName) assertDirectAgentMessageTarget(requestedSessionName);
 		if (this._rlmDepth >= this._rlmMaxDepth) {
 			throw new Error(
@@ -9803,6 +9822,7 @@ export class AgentSession {
 				sessionDir: childSessionDir,
 				model: modelSelection.model,
 				thinkingLevel: requestedReasoningEffort,
+				stripReasoning: requestedStripReasoning,
 			}),
 			onSessionPublished: publishChildSession,
 		};

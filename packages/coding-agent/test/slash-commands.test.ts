@@ -204,6 +204,19 @@ describe("session slash commands", () => {
 		expect(isSessionSlashCommandName("settings")).toBe(false);
 	});
 
+	test("registers /strip-reasoning as a no-argument session command", () => {
+		expect(BUILTIN_SLASH_COMMANDS.find((command) => command.name === "strip-reasoning")).toMatchObject({
+			execution: "session",
+			description: "Remove all assistant reasoning traces from the current session",
+		});
+		expect(builtinSlashCommandTakesArgument("strip-reasoning")).toBe(false);
+		expect(parseSessionSlashCommand("/strip-reasoning")).toEqual({
+			name: "strip-reasoning",
+			args: "",
+			text: "/strip-reasoning",
+		});
+	});
+
 	test("splits at the first horizontal Unicode whitespace and preserves the raw text", () => {
 		for (const text of ["/goal ship it", "/goal\tship it", "/goal\u00a0ship it", "/goal\u2003ship it"]) {
 			expect(parseSlashCommand(text)).toEqual({ name: "goal", args: "ship it" });

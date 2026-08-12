@@ -267,6 +267,28 @@ export type SessionEntry =
 /** Raw file entry (includes header) */
 export type FileEntry = SessionHeader | SessionEntry;
 
+/** Remove assistant reasoning blocks from a message while preserving all other content. */
+export function stripReasoningFromMessage(message: AgentMessage): AgentMessage {
+	if (message.role !== "assistant") return message;
+	const content = message.content.filter((block) => block.type !== "thinking");
+	return content.length === message.content.length ? message : { ...message, content };
+}
+
+/** Remove assistant reasoning from a persisted session entry, including compacted transcripts. */
+export function stripReasoningFromSessionEntry(entry: SessionEntry): SessionEntry {
+	if (entry.type === "message") {
+		const message = stripReasoningFromMessage(entry.message);
+		return message === entry.message ? entry : { ...entry, message };
+	}
+	if (entry.type === "compaction" && entry.compactedMessages) {
+		const compactedMessages = entry.compactedMessages.map(stripReasoningFromMessage);
+		if (compactedMessages.some((message, index) => message !== entry.compactedMessages?.[index])) {
+			return { ...entry, compactedMessages };
+		}
+	}
+	return entry;
+}
+
 /** Tree node for getTree() - defensive copy of session structure */
 export interface SessionTreeFlatNode {
 	entry: SessionEntry;
@@ -1465,6 +1487,23 @@ export class SessionManager {
 		return this.persist ? getSessionArtifactPath(this.sessionDir, this.sessionId) : undefined;
 	}
 
+	/** Remove reasoning from the current session and durably rewrite its JSONL file. */
+	stripReasoning(): boolean {
+		let changed = false;
+		this.fileEntries = this.fileEntries.map((entry) => {
+			if (entry.type === "session") return entry;
+			const stripped = stripReasoningFromSessionEntry(entry);
+			if (stripped !== entry) changed = true;
+			return stripped;
+		});
+		if (changed) {
+			this._buildIndex();
+			this._rewriteFile();
+			this.flushed = true;
+		}
+		return changed;
+	}
+
 	/**
 	 * Force-write all in-memory entries to the session file immediately.
 	 * This bypasses the no-assistant guard in {@link _persist} so that
@@ -2256,7 +2295,13 @@ export class SessionManager {
 	 * @param targetCwd Target working directory (where the new session will be stored)
 	 * @param sessionDir Optional session directory. If omitted, uses default for targetCwd.
 	 */
-	static forkFrom(sourcePath: string, targetCwd: string, sessionDir?: string, rlmDepth?: number): SessionManager {
+	static forkFrom(
+		sourcePath: string,
+		targetCwd: string,
+		sessionDir?: string,
+		rlmDepth?: number,
+		stripReasoning = true,
+	): SessionManager {
 		const sourceEntries = loadEntriesFromFile(sourcePath);
 		if (sourceEntries.length === 0) {
 			throw new Error(`Cannot fork: source session file is empty or invalid: ${sourcePath}`);
@@ -2306,7 +2351,8 @@ export class SessionManager {
 		for (const entry of sourceEntries) {
 			if (entry.type === "session" || entry.type === "git_state") continue;
 			const parentId = liveParent(entry.parentId);
-			const out = parentId === entry.parentId ? entry : { ...entry, parentId };
+			const contentEntry = stripReasoning ? stripReasoningFromSessionEntry(entry) : entry;
+			const out = parentId === contentEntry.parentId ? contentEntry : { ...contentEntry, parentId };
 			appendFileSync(newSessionFile, `${JSON.stringify(out)}\n`);
 		}
 

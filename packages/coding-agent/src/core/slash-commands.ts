@@ -10,7 +10,7 @@ export interface SlashCommandInfo {
 	sourceInfo: SourceInfo;
 }
 
-export const SESSION_SLASH_COMMAND_NAMES = ["compact", "refine", "goal", "autonomous"] as const;
+export const SESSION_SLASH_COMMAND_NAMES = ["compact", "strip-reasoning", "refine", "goal", "autonomous"] as const;
 
 export type SessionSlashCommandName = (typeof SESSION_SLASH_COMMAND_NAMES)[number];
 
@@ -154,6 +154,10 @@ const CANONICAL_BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 		name: "compact",
 		description: "Compact the session context; optional instructions focus the summary",
 		argumentHint: "[instructions]",
+	},
+	{
+		name: "strip-reasoning",
+		description: "Remove all assistant reasoning traces from the current session",
 	},
 	{
 		name: "refine",

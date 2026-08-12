@@ -29,6 +29,7 @@ import {
 	createDefaultRlmSubagentSessionName,
 	createRlmDeleteSubagentHostHandler,
 	createRlmRunHostHandler,
+	normalizeRequestedRlmStripReasoning,
 	type SubagentRuntimeHost,
 } from "../src/core/rlm-runtime.js";
 import { SessionManager } from "../src/core/session-manager.js";
@@ -2182,6 +2183,15 @@ describeIfRootRlm("AgentSession rlm recursion", () => {
 		const root = createSession({ depth: 1, maxDepth: 1 });
 
 		await expect(root.runRlmChild("nested")).rejects.toThrow("RLM recursion depth limit reached");
+	});
+
+	it("defaults rlm.run reasoning stripping on and validates the opt-out", async () => {
+		expect(normalizeRequestedRlmStripReasoning(undefined)).toBe(true);
+		expect(normalizeRequestedRlmStripReasoning(false)).toBe(false);
+		const root = createSession();
+		await expect(root.runRlmChild("nested", { strip_reasoning: "false" })).rejects.toThrow(
+			"rlm.run strip_reasoning must be a boolean",
+		);
 	});
 
 	it("rejects unsupported rlm.run kwargs loudly", async () => {

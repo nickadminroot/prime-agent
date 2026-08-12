@@ -6,6 +6,7 @@ import type { HostRequestHandler } from "./kernel/index.js";
 
 export interface RlmRunRequest {
 	prompt: string;
+	/** Optional child controls: name, model, reasoning_effort, and strip_reasoning (default true). */
 	kwargs: Record<string, unknown>;
 	/** Source of the IPython cell that issued this rlm.run call, when available. */
 	cellSourceCode?: string;
@@ -58,6 +59,15 @@ const RLM_SUBAGENT_SESSION_NAME_MAX_LENGTH = 64;
 export const DEFAULT_RLM_MODEL_SEARCH_LIMIT = 8;
 export const MAX_RLM_MODEL_SEARCH_LIMIT = 20;
 const RLM_REASONING_EFFORTS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** Validate and normalize whether a child fork should strip inherited reasoning traces. */
+export function normalizeRequestedRlmStripReasoning(value: unknown): boolean {
+	if (value === undefined) return true;
+	if (typeof value !== "boolean") {
+		throw new Error("rlm.run strip_reasoning must be a boolean");
+	}
+	return value;
+}
 
 /** Validate and normalize an orchestrator-supplied subagent reasoning effort. */
 export function normalizeRequestedRlmReasoningEffort(value: unknown): ThinkingLevel | undefined {
@@ -235,6 +245,8 @@ export interface CreateRlmSubagentRuntimeOptions {
 	rlmDepth: number;
 	rlmMaxDepth: number;
 	rlmParentNodeId: string;
+	/** Whether inherited assistant reasoning blocks are removed from the child fork. */
+	stripReasoning?: boolean;
 	/** Source of the IPython cell that spawned this subagent, for display. */
 	spawnCode?: string;
 	/** Publish the session to the parent before a host makes the runtime addressable. */

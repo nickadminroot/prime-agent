@@ -406,7 +406,7 @@ Key methods for working with sessions programmatically.
 - `SessionManager.open(path, sessionDir?)` - Open existing session file
 - `SessionManager.continueRecent(cwd, sessionDir?)` - Continue most recent or create new
 - `SessionManager.inMemory(cwd?)` - No file persistence
-- `SessionManager.forkFrom(sourcePath, targetCwd, sessionDir?)` - Fork session from another project
+- `SessionManager.forkFrom(sourcePath, targetCwd, sessionDir?, rlmDepth?, stripReasoning?)` - Fork session from another project; strips inherited assistant reasoning by default
 
 ### Static Listing Methods
 - `SessionManager.list(cwd, sessionDir?, callbacks?)` - List sessions for a directory
@@ -415,6 +415,7 @@ Key methods for working with sessions programmatically.
 `callbacks` can provide `onProgress(loaded, total)` and `onSession(session)` handlers.
 
 ### Instance Methods - Session Management
+- `stripReasoning()` - Remove all assistant reasoning blocks from the current session and rewrite its JSONL file
 - `newSession(options?)` - Start a new session (options: `{ parentSession?: string }`)
 - `setSessionFile(path)` - Switch to a different session file
 - `createBranchedSession(leafId)` - Extract branch to new session file
