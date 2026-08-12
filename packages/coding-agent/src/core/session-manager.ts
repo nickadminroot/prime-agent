@@ -2256,7 +2256,7 @@ export class SessionManager {
 	 * @param targetCwd Target working directory (where the new session will be stored)
 	 * @param sessionDir Optional session directory. If omitted, uses default for targetCwd.
 	 */
-	static forkFrom(sourcePath: string, targetCwd: string, sessionDir?: string): SessionManager {
+	static forkFrom(sourcePath: string, targetCwd: string, sessionDir?: string, rlmDepth?: number): SessionManager {
 		const sourceEntries = loadEntriesFromFile(sourcePath);
 		if (sourceEntries.length === 0) {
 			throw new Error(`Cannot fork: source session file is empty or invalid: ${sourcePath}`);
@@ -2287,7 +2287,7 @@ export class SessionManager {
 			timestamp,
 			cwd: targetCwd,
 			parentSession: sourcePath,
-			rlmDepth: resolveSessionRlmDepth(sourceHeader, sourcePath),
+			rlmDepth: rlmDepth ?? resolveSessionRlmDepth(sourceHeader, sourcePath),
 			git: captureGitContext(targetCwd) ?? undefined,
 		};
 		appendFileSync(newSessionFile, `${JSON.stringify(newHeader)}\n`);

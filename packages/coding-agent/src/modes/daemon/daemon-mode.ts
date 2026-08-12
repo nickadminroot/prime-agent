@@ -282,6 +282,7 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"get_model_catalog",
 	"get_available_models",
 	"get_queue",
+	"mutate_queued_message",
 	"clear_queue",
 	"abort_and_clear_queue",
 	"cron_list",
@@ -2310,9 +2311,14 @@ export class AgentDaemon {
 		const canForkParentSession =
 			parentSessionFile !== undefined && existsSync(parentSessionFile) && statSync(parentSessionFile).size > 0;
 		const sessionManager = canForkParentSession
-			? SessionManager.forkFrom(parentSessionFile, options.parentSession.sessionManager.getCwd(), options.sessionDir)
+			? SessionManager.forkFrom(
+					parentSessionFile,
+					options.parentSession.sessionManager.getCwd(),
+					options.sessionDir,
+					options.rlmDepth,
+				)
 			: SessionManager.create(options.parentSession.sessionManager.getCwd(), options.sessionDir);
-		if (parentSessionFile && !canForkParentSession) {
+		if (!canForkParentSession) {
 			sessionManager.newSession({ parentSession: parentSessionFile, rlmDepth: options.rlmDepth });
 		}
 		let stateRef: ActiveSessionState | undefined;
@@ -4185,6 +4191,17 @@ export class AgentDaemon {
 					steering: [...state.runtime.session.getSteeringMessagePreviews()],
 					followUp: [...state.runtime.session.getFollowUpMessagePreviews()],
 				});
+			}
+
+			case "mutate_queued_message": {
+				const state = this.getSessionState(command.activeSessionId);
+				const status = state.runtime.session.mutateQueuedMessage(
+					command.lane,
+					command.index,
+					command.expectedText,
+					command.mutation,
+				);
+				return success(command.id, "mutate_queued_message", { status });
 			}
 
 			case "clear_queue": {

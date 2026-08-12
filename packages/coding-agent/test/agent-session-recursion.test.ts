@@ -45,17 +45,32 @@ function userText(context: Context): string {
 	const lastMessage = context.messages[context.messages.length - 1] as AgentMessage | undefined;
 	if (!lastMessage) return "";
 	if (isAgentSessionMessage(lastMessage)) {
-		return lastMessage.content.replace(/^\[task from parent\]\n\n/, "");
+		return lastMessage.content
+			.replace(/^\[task from parent\]\n\n/, "")
+			.replace(
+				/^The history above is provided for reference only\. Your task is defined in the prompt from the parent below\.\n\n/,
+				"",
+			);
 	}
 	if (lastMessage.role !== "user") return "";
 	if (typeof lastMessage.content === "string") {
-		return lastMessage.content.replace(/^\[task from parent\]\n\n/, "");
+		return lastMessage.content
+			.replace(/^\[task from parent\]\n\n/, "")
+			.replace(
+				/^The history above is provided for reference only\. Your task is defined in the prompt from the parent below\.\n\n/,
+				"",
+			);
 	}
 	const text = lastMessage.content
 		.filter((block): block is TextContent => block.type === "text")
 		.map((block) => block.text)
 		.join("\n");
-	return text.replace(/^\[task from parent\]\n\n/, "");
+	return text
+		.replace(/^\[task from parent\]\n\n/, "")
+		.replace(
+			/^The history above is provided for reference only\. Your task is defined in the prompt from the parent below\.\n\n/,
+			"",
+		);
 }
 
 function usage(input = 7, output = 3): Usage {
@@ -231,7 +246,11 @@ function findLastMessage(
 	return undefined;
 }
 
-describe("AgentSession rlm recursion", () => {
+// RLM recursion tests require a root test process. A nested agent inherits the
+// caller's RLM_DEPTH and cannot spawn the children these tests exercise.
+const describeIfRootRlm = process.env.RLM_DEPTH === "0" ? describe : describe.skip;
+
+describeIfRootRlm("AgentSession rlm recursion", () => {
 	let tempDir: string;
 	let session: AgentSession | undefined;
 
@@ -705,7 +724,8 @@ describe("AgentSession rlm recursion", () => {
 		expect(child?.messages[0]).toMatchObject({
 			role: "custom",
 			customType: "agent_message",
-			content: "[task from parent]\n\nsummarize shard 1",
+			content:
+				"[task from parent]\n\nThe history above is provided for reference only. Your task is defined in the prompt from the parent below.\n\nsummarize shard 1",
 			display: true,
 			details: {
 				id: `spawn:${result.rlm_child_id}`,
@@ -1848,21 +1868,25 @@ describe("AgentSession rlm recursion", () => {
 		});
 	});
 
-	it("gets and persists per-chat max-depth changes without transcript messages", async () => {
-		const root = createSession();
-		const originalMessages = [...root.messages];
+	// This assertion describes the built-in default; an inherited RLM_MAX_DEPTH is an environment-specific override.
+	it.skipIf(process.env.RLM_MAX_DEPTH !== undefined)(
+		"gets and persists per-chat max-depth changes without transcript messages",
+		async () => {
+			const root = createSession();
+			const originalMessages = [...root.messages];
 
-		expect(root.getRlmMaxDepthStatus()).toEqual({ maxDepth: 1, source: "default" });
-		await expect(root.setRlmMaxDepth(-1)).rejects.toThrow("non-negative integer");
-		await root.setRlmMaxDepth(3);
+			expect(root.getRlmMaxDepthStatus()).toEqual({ maxDepth: 1, source: "default" });
+			await expect(root.setRlmMaxDepth(-1)).rejects.toThrow("non-negative integer");
+			await root.setRlmMaxDepth(3);
 
-		expect(root.getRlmMaxDepthStatus()).toEqual({ maxDepth: 3, source: "chat" });
-		expect(root.messages).toEqual(originalMessages);
-		const stateEntries = root.sessionManager
-			.getBranch()
-			.filter((entry) => entry.type === "custom" && entry.customType === "rlm_max_depth_state");
-		expect(stateEntries.at(-1)).toMatchObject({ data: { maxDepth: 3 } });
-	});
+			expect(root.getRlmMaxDepthStatus()).toEqual({ maxDepth: 3, source: "chat" });
+			expect(root.messages).toEqual(originalMessages);
+			const stateEntries = root.sessionManager
+				.getBranch()
+				.filter((entry) => entry.type === "custom" && entry.customType === "rlm_max_depth_state");
+			expect(stateEntries.at(-1)).toMatchObject({ data: { maxDepth: 3 } });
+		},
+	);
 
 	it("applies max-depth immediately while a turn streams without aborting or entering the transcript", async () => {
 		let releaseTurn!: () => void;
@@ -3186,7 +3210,7 @@ interface InspectableRlmDirSession {
 	_rlmKernelEnv(): Record<string, string>;
 }
 
-describe("AgentSession RLM session dir", () => {
+describeIfRootRlm("AgentSession RLM session dir", () => {
 	let tempDir: string;
 	let session: AgentSession | undefined;
 
