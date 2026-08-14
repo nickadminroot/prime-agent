@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { DEFAULT_RLM_EXTRA_IMPORT_LABELS } from "../src/core/kernel/bootstrap.js";
-import { buildRlmPrompt } from "../src/core/prompts/index.js";
+import { buildRlmPrompt, buildSubagentGuidance } from "../src/core/prompts/index.js";
 import type { HarnessState } from "../src/core/refinement/index.js";
 import type { Skill } from "../src/core/skills.js";
 import { buildSystemPrompt } from "../src/core/system-prompt.js";
@@ -76,7 +76,11 @@ describe("buildRlmPrompt", () => {
 				"",
 				"Python state in the kernel, by contrast, persists across cells: named variables, helper functions, classes, imports, notes, parsed outputs, and helper data structures all remain available in every later turn. Tool calls are themselves Python `await` expressions, so their return values can be bound to variables and composed into program logic just like any other call.",
 				"",
-				"Each subagent runs in a separate fresh IPython kernel. Forking preserves the parent conversation/session history and attempts a best-effort snapshot/restore of the parent's picklable top-level IPython state into the child, but it does NOT share the live kernel namespace or runtime handles. Values that cannot be serialized, open handles, sockets, tasks, and IPython/rlm internals are not preserved; recreate them or pass data through the task prompt or files.",
+				[
+					"Forking gives you the parent conversation/session history as inherited background. The `[task from parent]` prompt should therefore be concise: act on the new assignment and include only ownership, acceptance criteria, or material facts created after the fork; do not restate generic instructions or already available evidence.",
+					"Each child has a separate fresh IPython kernel, but startup attempts a best-effort restore of the parent's picklable top-level state. Start by reusing inherited imports, constants, helpers, command tables, and captured results; do not re-import or recreate setup unless a required name is absent. `q`, `rlm`, and installed Python skills are bootstrap-injected in every kernel.",
+					"The restored state is a copy, not a live shared namespace: non-picklable or oversized values, open handles, sockets, tasks, and other runtime internals can be absent. Pass essential fresh or non-restorable values through the task prompt or files, and recreate only the missing part.",
+				].join(" "),
 				"",
 				"Continual harness state is available as `rlm.harness` and `rlm.get_harness_state()`. CRUD calls are local to this Prime Agent session by default: `rlm.harness.create_memory(...)`, `rlm.harness.update_memory(...)`, `rlm.harness.delete_memory(...)`, `rlm.harness.create_skill(...)`, `rlm.harness.update_skill(...)`, `rlm.harness.delete_skill(...)`, `rlm.harness.create_subagent(...)`, `rlm.harness.update_subagent(...)`, `rlm.harness.delete_subagent(...)`, `rlm.harness.create_prompt_note(...)`, `rlm.harness.update_prompt_note(...)`, `rlm.harness.delete_prompt_note(...)`, plus `rlm.harness.record_refinement(...)` and `rlm.harness.overview()`. Use `global_=True` only for stable cross-session lessons; Python reserves `global`, so literal `global=True` is invalid syntax.",
 				"",
@@ -87,6 +91,13 @@ describe("buildRlmPrompt", () => {
 				"Treat continual harness refinement as a small, evidence-backed update after observing a repeated failure or reusable tactic: diagnose the issue, update the smallest relevant continual harness component, validate on the next action, then record the outcome. Use `await refine.run()` to turn repeated delegation patterns into reusable subagent specs, repeated procedures into skills, durable facts/preferences into memories, and narrow behavioral policies into prompt addendums. It returns immediately and runs when the current turn ends, so continue working normally after calling it. Do not rewrite the whole continual harness when a focused memory, skill, prompt note, or subagent spec is enough.",
 			].join("\n"),
 		);
+	});
+
+	test("tells parents to send concise task deltas to forked children", () => {
+		const guidance = buildSubagentGuidance({ hasAgentMessage: true });
+		expect(guidance).toContain("A child forks the parent conversation");
+		expect(guidance).toContain("do not make its task prompt a long restatement of inherited context");
+		expect(guidance).toContain("fresh or non-restorable runtime evidence");
 	});
 
 	test("defaults omitted activeTools to ipython guidance", () => {
@@ -615,9 +626,11 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("not a transcript of a task you sent");
 		expect(prompt).toContain("Forked earlier messages are read-only background from the parent");
 		expect(prompt).toContain('await agent_message.send(message, receiver_role="parent")');
-		expect(prompt).toContain("Forking preserves the parent conversation/session history");
-		expect(prompt).toContain("best-effort snapshot/restore");
-		expect(prompt).toContain("does NOT share the live kernel namespace");
+		expect(prompt).toContain("Forking gives you the parent conversation/session history");
+		expect(prompt).toContain("prompt should therefore be concise");
+		expect(prompt).toContain("best-effort restore of the parent's picklable top-level state");
+		expect(prompt).toContain("Start by reusing inherited imports, constants, helpers");
+		expect(prompt).toContain("not a live shared namespace");
 		expect(prompt).not.toContain("You are a general purpose agent that uses code to solve tasks.");
 	});
 

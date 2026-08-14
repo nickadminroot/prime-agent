@@ -1,7 +1,10 @@
 import { DEFAULT_RLM_EXTRA_IMPORT_LABELS } from "../kernel/bootstrap.js";
 
-const SUBAGENT_IPYTHON_ISOLATION_PROMPT =
-	"Each subagent runs in a separate fresh IPython kernel. Forking preserves the parent conversation/session history and attempts a best-effort snapshot/restore of the parent's picklable top-level IPython state into the child, but it does NOT share the live kernel namespace or runtime handles. Values that cannot be serialized, open handles, sockets, tasks, and IPython/rlm internals are not preserved; recreate them or pass data through the task prompt or files.";
+const SUBAGENT_IPYTHON_ISOLATION_PROMPT = [
+	"Forking gives you the parent conversation/session history as inherited background. The `[task from parent]` prompt should therefore be concise: act on the new assignment and include only ownership, acceptance criteria, or material facts created after the fork; do not restate generic instructions or already available evidence.",
+	"Each child has a separate fresh IPython kernel, but startup attempts a best-effort restore of the parent's picklable top-level state. Start by reusing inherited imports, constants, helpers, command tables, and captured results; do not re-import or recreate setup unless a required name is absent. `q`, `rlm`, and installed Python skills are bootstrap-injected in every kernel.",
+	"The restored state is a copy, not a live shared namespace: non-picklable or oversized values, open handles, sockets, tasks, and other runtime internals can be absent. Pass essential fresh or non-restorable values through the task prompt or files, and recreate only the missing part.",
+].join(" ");
 
 export interface RlmPromptOptions {
 	cwd: string;
@@ -187,7 +190,8 @@ export function buildSubagentGuidance(
 	const lines = [
 		"# Delegating to sub-agents",
 		"",
-		"Spawn independent, self-contained work with `handle = await rlm('task', name='worker')`. This returns at admission, not completion; keep the handle to stop or inspect the child later.",
+		"Spawn independent work with `handle = await rlm('task', name='worker')`. This returns at admission, not completion; keep the handle to stop or inspect the child later.",
+		"A child forks the parent conversation and receives a best-effort restored IPython snapshot, so do not make its task prompt a long restatement of inherited context. Supply the task-specific delta, ownership, acceptance criteria, and only fresh or non-restorable runtime evidence.",
 	];
 	if (options.hasAgentMessage) {
 		lines.push(
